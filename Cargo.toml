@@ -1,0 +1,27 @@
+[package]
+name = "gpui_web"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "A Chromium (CEF) web view for GPUI, composited by the OS under the GPUI window"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+# Pinned: the presenters rely on GPUI internals that are not API
+# (Wayland surface alpha, the topmost DirectComposition target). Re-run the
+# spikes in examples/ before bumping.
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+raw-window-handle = "0.6"
+async-channel = "2"
+# One CEF (Chromium 154) on every platform. No sandbox in v1 (see README).
+cef = { version = "=154.5.0", default-features = false, features = ["build-util"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+
+[dev-dependencies]
+gpui-kit = "0.7"
