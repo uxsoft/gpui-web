@@ -1211,6 +1211,9 @@ impl WaylandPresenter {
                 self.subsurface.set_sync();
             } else {
                 self.subsurface.set_desync();
+                // A parent commit no longer applies what's cached for a
+                // desynchronized subsurface; our own commit does.
+                self.surface.commit();
             }
         }
     }
