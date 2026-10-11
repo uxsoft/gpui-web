@@ -90,6 +90,43 @@ pub(crate) trait Presenter {
     fn focus_changed(&mut self, _focused: bool) {}
 }
 
+/// Frame statistics, logged each second with `GPUI_WEB_STATS=1`: frames
+/// put on screen, and the longest gap between two.
+#[derive(Default)]
+pub(crate) struct Stats {
+    since: Option<std::time::Instant>,
+    last: Option<std::time::Instant>,
+    frames: u32,
+    longest: std::time::Duration,
+}
+
+impl Stats {
+    pub fn frame(&mut self) {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*ON.get_or_init(|| env("GPUI_WEB_STATS").is_some()) {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last {
+            self.longest = self.longest.max(now - last);
+        }
+        self.last = Some(now);
+        self.frames += 1;
+        let since = *self.since.get_or_insert(now);
+        if now - since >= std::time::Duration::from_secs(1) {
+            let fps = self.frames as f64 / (now - since).as_secs_f64();
+            tracing::info!(
+                "web view: {fps:.1} frames/s, longest gap {:.1} ms",
+                self.longest.as_secs_f64() * 1000.
+            );
+            *self = Self {
+                last: Some(now),
+                ..Self::default()
+            };
+        }
+    }
+}
+
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }

@@ -21,6 +21,7 @@ pub(crate) struct CpuPresenter {
     image: Option<Arc<RenderImage>>,
     /// Images to release from the GPU, once GPUI no longer draws them.
     retired: Vec<Arc<RenderImage>>,
+    stats: super::Stats,
 }
 
 #[derive(Default)]
@@ -91,7 +92,7 @@ impl Presenter for CpuPresenter {
     }
 
     fn has_content(&self) -> bool {
-        self.image.is_some() || !self.view.pixels.is_empty()
+        self.image.is_some()
     }
 
     fn place(&mut self, place: &Placement, window: &mut Window, _cx: &mut App) {
@@ -100,13 +101,24 @@ impl Presenter for CpuPresenter {
         }
         if self.changed {
             self.changed = false;
-            if let Some(pixels) = self.composed() {
+            // Without a popup the frame moves into the image: CEF hands over
+            // whole frames, so there's nothing to keep.
+            let pixels = if self.popup_shown {
+                self.composed()
+            } else {
+                Some(std::mem::take(&mut self.view.pixels)).filter(|p| {
+                    p.len() == (self.view.width * self.view.height * 4).max(0) as usize
+                        && !p.is_empty()
+                })
+            };
+            if let Some(pixels) = pixels {
                 let (w, h) = (self.view.width as u32, self.view.height as u32);
                 if let Some(buffer) = image::RgbaImage::from_raw(w, h, pixels) {
                     let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
                     if let Some(old) = self.image.replace(image) {
                         self.retired.push(old);
                     }
+                    self.stats.frame();
                 }
             }
         }

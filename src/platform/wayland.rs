@@ -1136,6 +1136,7 @@ pub(crate) struct WaylandPresenter {
     popup_rect: Option<Rect>,
     popup_shown: bool,
     browser: Option<Browser>,
+    stats: super::Stats,
 }
 
 impl WaylandPresenter {
@@ -1199,6 +1200,7 @@ impl WaylandPresenter {
             popup_rect: None,
             popup_shown: false,
             browser: None,
+            stats: super::Stats::default(),
         })
     }
 
@@ -1302,6 +1304,7 @@ impl WaylandPresenter {
         let ix = result?;
         self.pool[ix].released.store(false, Ordering::Release);
         self.attached = Some(ix);
+        self.stats.frame();
         if self.shown {
             self.surface.attach(Some(&self.pool[ix].buffer), 0, 0);
             self.surface.damage_buffer(0, 0, size.0, size.1);

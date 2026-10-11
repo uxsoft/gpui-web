@@ -207,6 +207,7 @@ pub(crate) struct LayerPresenter {
     popup_rect: Option<Rect>,
     popup_shown: bool,
     browser: Option<Browser>,
+    stats: super::Stats,
 }
 
 impl LayerPresenter {
@@ -249,6 +250,7 @@ impl LayerPresenter {
                 popup_rect: None,
                 popup_shown: false,
                 browser: None,
+                stats: super::Stats::default(),
             })
         }
     }
@@ -374,6 +376,7 @@ impl LayerPresenter {
             let _: () = msg_send![layer, setContentsScale: scale];
         });
         self.has_frame = true;
+        self.stats.frame();
         Ok(())
     }
 
