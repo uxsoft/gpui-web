@@ -15,6 +15,16 @@ use crate::browser::{self, ContextMenu, Disposition, FileChooser, JsDialog, Page
 use crate::element::WebViewElement;
 use crate::runtime::Profile;
 
+/// On Linux the page's own clipboard can't reach the system's (off-screen,
+/// Chromium has no window of its own to hold it), so copy and paste go
+/// through GPUI, which has the user's key press.
+const CLIPBOARD_THROUGH_GPUI: bool = cfg!(target_os = "linux");
+
+/// Reads the selection, in a text field or the page.
+const SELECTION_JS: &str = "(() => { const e = document.activeElement; \
+if (e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA') && typeof e.selectionStart === 'number') \
+return e.value.substring(e.selectionStart, e.selectionEnd); return String(getSelection()); })()";
+
 pub enum WebViewEvent {
     TitleChanged,
     UrlChanged,
@@ -276,22 +286,55 @@ impl WebView {
         }
     }
 
-    pub fn copy(&self) {
-        if let Some(frame) = self.focused_frame() {
-            frame.copy();
+    /// Copies the selection to the clipboard.
+    pub fn copy(&self, cx: &mut App) {
+        self.copy_or_cut(false, cx);
+    }
+
+    /// Cuts the selection to the clipboard.
+    pub fn cut(&self, cx: &mut App) {
+        self.copy_or_cut(true, cx);
+    }
+
+    /// Pastes the clipboard's text.
+    pub fn paste_from_clipboard(&self, cx: &mut App) {
+        if !CLIPBOARD_THROUGH_GPUI {
+            if let Some(frame) = self.focused_frame() {
+                frame.paste();
+            }
+            return;
+        }
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.insert_text(&text, cx);
         }
     }
 
-    pub fn cut(&self) {
-        if let Some(frame) = self.focused_frame() {
-            frame.cut();
+    fn copy_or_cut(&self, cut: bool, cx: &mut App) {
+        if !CLIPBOARD_THROUGH_GPUI {
+            if let Some(frame) = self.focused_frame() {
+                if cut { frame.cut() } else { frame.copy() }
+            }
+            return;
         }
-    }
-
-    pub fn paste(&self) {
-        if let Some(frame) = self.focused_frame() {
-            frame.paste();
-        }
+        let read = self.evaluate(SELECTION_JS, cx);
+        let frame = self.focused_frame();
+        cx.spawn(async move |cx| {
+            let Ok(serde_json::Value::String(text)) = read.await else {
+                return;
+            };
+            if text.is_empty() {
+                return;
+            }
+            cx.update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)));
+            if cut && let Some(frame) = frame {
+                frame.execute_java_script(
+                    Some(&"document.execCommand('delete')".into()),
+                    Some(&"".into()),
+                    0,
+                );
+            }
+        })
+        .detach();
     }
 
     pub fn select_all(&self) {
@@ -313,10 +356,9 @@ impl WebView {
     }
 
     /// Types `text` into the focused element, as if pasted.
-    pub fn insert_text(&self, text: &str) {
-        if let Some(host) = self.host() {
-            host.ime_commit_text(Some(&text.into()), None, 0);
-        }
+    pub fn insert_text(&self, text: &str, cx: &App) {
+        self.devtools_call("Input.insertText", serde_json::json!({ "text": text }), cx)
+            .detach();
     }
 
     /// Runs `code` in the page's main frame.
