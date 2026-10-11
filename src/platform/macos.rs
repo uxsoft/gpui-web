@@ -49,6 +49,9 @@ pub(crate) fn load_framework() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
+    if FRAMEWORK_LOADED.load(Ordering::Relaxed) {
+        return true;
+    }
     let helper = exe.to_string_lossy().contains(" Helper");
     let loaded = std::panic::catch_unwind(|| {
         let loader = cef::library_loader::LibraryLoader::new(&exe, helper);
@@ -56,7 +59,16 @@ pub(crate) fn load_framework() -> bool {
         std::mem::forget(loader);
         ok
     });
-    loaded.unwrap_or(false)
+    let loaded = loaded.unwrap_or(false);
+    FRAMEWORK_LOADED.store(loaded, Ordering::Relaxed);
+    loaded
+}
+
+static FRAMEWORK_LOADED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the framework could be loaded (the app runs from its bundle).
+pub(crate) fn framework_loaded() -> bool {
+    FRAMEWORK_LOADED.load(Ordering::Relaxed)
 }
 
 /// Paths into the app bundle: the framework, the bundle, and the helper.

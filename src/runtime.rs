@@ -75,10 +75,12 @@ pub(crate) enum Mode {
 /// else starts threads or opens files: in the browser process it reserves
 /// fds 3 and 4 for the DevTools pipe when `devtools_pipe` is set.
 pub fn handle_subprocess(devtools_pipe: bool) -> Option<i32> {
+    // Outside an app bundle there is no framework: not a CEF subprocess
+    // (those run from helper bundles), and no browser until the app runs
+    // from a bundle.
     #[cfg(target_os = "macos")]
     if !crate::platform::macos::load_framework() {
-        eprintln!("gpui_web: couldn't load the Chromium Embedded Framework");
-        return Some(1);
+        return None;
     }
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let args = Args::new();
@@ -268,6 +270,10 @@ pub(crate) fn ensure_started() -> Result<(), String> {
 }
 
 fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if !crate::platform::macos::framework_loaded() && !crate::platform::macos::load_framework() {
+        return Err("The Chromium Embedded Framework isn't in the app bundle.".into());
+    }
     // Selects CEF's API version; handle_subprocess already did, unless the
     // subprocesses run from another executable.
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
@@ -312,6 +318,9 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
             LogLevel::Disabled => LogSeverity::DISABLE,
         },
         background_color: 0xffff_ffff,
+        accept_language_list: accept_languages()
+            .map(|l| CefString::from(l.as_str()))
+            .unwrap_or_default(),
         // Chromium's crash handlers would fight the host app's.
         disable_signal_handlers: 1,
         ..crate::platform::settings()
@@ -333,6 +342,32 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
     }
     tracing::info!("CEF started ({mode:?})");
     Ok(())
+}
+
+/// The languages pages are asked for, from the POSIX locale (e.g.
+/// `cs_CZ.UTF-8` → `cs-CZ,cs,en-US,en`); Chromium's own default otherwise.
+fn accept_languages() -> Option<String> {
+    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))?;
+    accept_languages_for(&locale)
+}
+
+fn accept_languages_for(locale: &str) -> Option<String> {
+    let tag = locale.split(['.', '@']).next()?.replace('_', "-");
+    if tag.is_empty() || tag == "C" || tag == "POSIX" {
+        return None;
+    }
+    let mut languages = vec![tag.clone()];
+    if let Some((language, _)) = tag.split_once('-') {
+        languages.push(language.to_string());
+    }
+    for fallback in ["en-US", "en"] {
+        if !languages.iter().any(|l| l == fallback) {
+            languages.push(fallback.to_string());
+        }
+    }
+    Some(languages.join(","))
 }
 
 fn path_string(path: &Path) -> CefString {
@@ -417,5 +452,24 @@ impl Profile {
 impl PartialEq for Profile {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::accept_languages_for;
+
+    #[test]
+    fn pages_get_the_systems_languages() {
+        assert_eq!(
+            accept_languages_for("cs_CZ.UTF-8").as_deref(),
+            Some("cs-CZ,cs,en-US,en")
+        );
+        assert_eq!(
+            accept_languages_for("en_US.UTF-8").as_deref(),
+            Some("en-US,en")
+        );
+        assert_eq!(accept_languages_for("de").as_deref(), Some("de,en-US,en"));
+        assert_eq!(accept_languages_for("C.UTF-8"), None);
     }
 }
