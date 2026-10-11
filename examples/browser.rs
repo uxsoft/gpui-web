@@ -2,7 +2,9 @@
 //! to check that GPUI draws over it.
 //!
 //! Run: cargo run -p gpui_web --example browser [-- URL]
-//! `GPUI_WEB_PRESENTER=cpu` forces the CPU path.
+//! `GPUI_WEB_PRESENTER=cpu` forces the CPU path. `--popover` starts with the
+//! popover open; `--click X,Y` clicks there (window coordinates) after five
+//! seconds, through GPUI's input path, for checks without a person.
 
 use std::time::Duration;
 
@@ -197,6 +199,17 @@ impl Render for Browser {
     }
 }
 
+/// `--click X,Y`.
+fn click_arg() -> Option<(f32, f32)> {
+    let args: Vec<String> = std::env::args().collect();
+    let value = args
+        .iter()
+        .position(|a| a == "--click")
+        .and_then(|i| args.get(i + 1))?;
+    let (x, y) = value.split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
 fn cache_dir() -> std::path::PathBuf {
     std::env::temp_dir().join("gpui_web_example")
 }
@@ -208,9 +221,12 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    let start = std::env::args()
-        .skip(1)
-        .find(|a| !a.starts_with('-'))
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let start = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with('-') && (*i == 0 || args[i - 1] != "--click"))
+        .map(|(_, a)| a.clone())
         .unwrap_or_else(|| "https://example.com".into());
     gpui_kit::application().run(move |cx: &mut App| {
         gpui_kit::init(cx);
@@ -247,6 +263,44 @@ fn main() {
                 root.style().background = Some(gpui_kit::transparent_black().into());
             })
             .ok();
+        }
+        if let Some((x, y)) = click_arg() {
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                window
+                    .update(cx, |_, window, cx| {
+                        let position = point(px(x), px(y));
+                        window.dispatch_event(
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position,
+                                pressed_button: None,
+                                modifiers: Modifiers::default(),
+                            }),
+                            cx,
+                        );
+                        for down in [true, false] {
+                            let event = if down {
+                                PlatformInput::MouseDown(MouseDownEvent {
+                                    button: MouseButton::Left,
+                                    position,
+                                    modifiers: Modifiers::default(),
+                                    click_count: 1,
+                                    first_mouse: false,
+                                })
+                            } else {
+                                PlatformInput::MouseUp(MouseUpEvent {
+                                    button: MouseButton::Left,
+                                    position,
+                                    modifiers: Modifiers::default(),
+                                    click_count: 1,
+                                })
+                            };
+                            window.dispatch_event(event, cx);
+                        }
+                    })
+                    .ok();
+            })
+            .detach();
         }
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {

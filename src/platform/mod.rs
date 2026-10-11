@@ -102,6 +102,7 @@ pub(crate) struct Stats {
 
 impl Stats {
     pub fn frame(&mut self) {
+        crate::runtime::first_frame();
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if !*ON.get_or_init(|| env("GPUI_WEB_STATS").is_some()) {
             return;

@@ -140,6 +140,22 @@ thread_local! {
 /// Where CEF's "do work" requests go, from any thread.
 static PUMP: OnceLock<async_channel::Sender<i64>> = OnceLock::new();
 
+/// When `init` ran, for the first-frame log.
+static INIT_AT: OnceLock<Instant> = OnceLock::new();
+
+/// Logs, once, how long the first page frame took from `init`.
+pub(crate) fn first_frame() {
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed)
+        && let Some(at) = INIT_AT.get()
+    {
+        tracing::info!(
+            "first page frame {} ms after start",
+            at.elapsed().as_millis()
+        );
+    }
+}
+
 pub(crate) fn schedule_pump(delay_ms: i64) {
     if let Some(pump) = PUMP.get() {
         pump.try_send(delay_ms).ok();
@@ -149,6 +165,7 @@ pub(crate) fn schedule_pump(delay_ms: i64) {
 /// Sets CEF up to start with the first web view, and starts the message
 /// pump. Call once, from the main thread, at app start.
 pub fn init(options: RuntimeOptions, cx: &mut App) {
+    INIT_AT.set(Instant::now()).ok();
     let (tx, rx) = async_channel::unbounded::<i64>();
     if PUMP.set(tx).is_err() {
         tracing::warn!("gpui_web::init called twice");
