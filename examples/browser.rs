@@ -190,6 +190,7 @@ fn main() {
                 log_level: Default::default(),
                 log_file: None,
                 user_agent_product: None,
+                subprocess_path: None,
             },
             cx,
         );

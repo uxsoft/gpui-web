@@ -53,6 +53,9 @@ pub struct RuntimeOptions {
     pub log_file: Option<PathBuf>,
     /// Appended to the user agent, e.g. `Wisp/1.0`.
     pub user_agent_product: Option<String>,
+    /// The executable CEF runs its subprocesses from, when it isn't this
+    /// one (tests); it must call [`handle_subprocess`] first thing.
+    pub subprocess_path: Option<PathBuf>,
 }
 
 /// How pages are shown, chosen once per process.
@@ -84,13 +87,19 @@ pub fn handle_subprocess(devtools_pipe: bool) -> Option<i32> {
     if code >= 0 {
         return Some(code);
     }
-    #[cfg(unix)]
     if devtools_pipe {
-        crate::devtools::reserve_pipe();
+        reserve_devtools_pipe();
     }
-    #[cfg(not(unix))]
-    let _ = devtools_pipe;
     None
+}
+
+/// Reserves fds 3 and 4 for the DevTools pipe ([`RemoteDebugging::Pipe`]),
+/// for apps that can't do it in [`handle_subprocess`] (because they replace
+/// their process first). Call it before anything opens files or starts
+/// threads. Does nothing off Unix.
+pub fn reserve_devtools_pipe() {
+    #[cfg(unix)]
+    crate::devtools::reserve_pipe();
 }
 
 /// The window background the presenters need: transparent where the page
@@ -255,6 +264,9 @@ pub(crate) fn ensure_started() -> Result<(), String> {
 }
 
 fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
+    // Selects CEF's API version; handle_subprocess already did, unless the
+    // subprocesses run from another executable.
+    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     std::fs::create_dir_all(&options.root_cache_dir)
         .map_err(|e| format!("creating {}: {e}", options.root_cache_dir.display()))?;
     let mut switches = crate::platform::switches(mode);
@@ -296,6 +308,10 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
         disable_signal_handlers: 1,
         ..crate::platform::settings()
     };
+    let mut settings = settings;
+    if let Some(path) = &options.subprocess_path {
+        settings.browser_subprocess_path = path_string(path);
+    }
     #[cfg(target_os = "macos")]
     crate::platform::macos::install_app_protocol();
     if initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut()) != 1 {

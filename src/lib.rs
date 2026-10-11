@@ -27,7 +27,15 @@ pub use browser::{ContextMenu, DialogKind, Disposition, FileChooser, JsDialog};
 pub use devtools::{devtools_url, take_devtools_pipe};
 pub use element::HoleBackground;
 pub use runtime::{
-    LogLevel, Profile, RemoteDebugging, RuntimeOptions, handle_subprocess, init, shutdown,
-    window_background,
+    LogLevel, Profile, RemoteDebugging, RuntimeOptions, handle_subprocess, init,
+    reserve_devtools_pipe, shutdown, window_background,
 };
 pub use webview::{WebView, WebViewEvent};
+
+/// The Chromium version pages run in, e.g. `154.0.8037.98`.
+pub fn chromium_version() -> &'static str {
+    let full = std::str::from_utf8(cef::sys::CEF_VERSION)
+        .unwrap_or_default()
+        .trim_end_matches('\0');
+    full.rsplit_once("chromium-").map_or(full, |(_, v)| v)
+}
