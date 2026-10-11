@@ -5,12 +5,18 @@ use cef::sys::{cef_cursor_type_t as Ct, cef_event_flags_t as Ef, cef_key_event_t
 use cef::{CursorType, KeyEvent, KeyEventType};
 use gpui::{CursorStyle, Keystroke, Modifiers, MouseButton};
 
+/// A flag's bits (signed on Windows, unsigned elsewhere).
+#[allow(clippy::unnecessary_cast)]
+fn bits(flag: Ef) -> u32 {
+    flag.0 as u32
+}
+
 /// CEF's `EVENTFLAG_*` bits for `modifiers`, plus held mouse `buttons`.
 pub(crate) fn event_flags(modifiers: &Modifiers, buttons: &[MouseButton]) -> u32 {
     let mut flags = 0;
     let mut set = |on: bool, flag: Ef| {
         if on {
-            flags |= flag.0 as u32;
+            flags |= bits(flag);
         }
     };
     set(modifiers.shift, Ef::EVENTFLAG_SHIFT_DOWN);
@@ -373,7 +379,7 @@ pub(crate) fn key_down_up(keystroke: &Keystroke, down: bool, repeat: bool) -> Op
     let (code, vk) = key_code(keystroke)?;
     let mut modifiers = event_flags(&keystroke.modifiers, &[]);
     if repeat {
-        modifiers |= Ef::EVENTFLAG_IS_REPEAT.0 as u32;
+        modifiers |= bits(Ef::EVENTFLAG_IS_REPEAT);
     }
     let character = keystroke
         .key_char
@@ -455,7 +461,7 @@ pub(crate) fn keystroke_of(event: &KeyEvent) -> Option<Keystroke> {
             name.to_string()
         }
     };
-    let has = |flag: Ef| event.modifiers & flag.0 as u32 != 0;
+    let has = |flag: Ef| event.modifiers & bits(flag) != 0;
     Some(Keystroke {
         modifiers: Modifiers {
             control: has(Ef::EVENTFLAG_CONTROL_DOWN),
@@ -527,9 +533,9 @@ mod tests {
         let down = key_down_up(&stroke("ctrl-shift-a"), true, true).unwrap();
         assert_eq!(Kt::from(down.type_), Kt::KEYEVENT_RAWKEYDOWN);
         assert_eq!(down.windows_key_code, 0x41);
-        let flags = (Ef::EVENTFLAG_CONTROL_DOWN.0
-            | Ef::EVENTFLAG_SHIFT_DOWN.0
-            | Ef::EVENTFLAG_IS_REPEAT.0) as u32;
+        let flags = bits(Ef::EVENTFLAG_CONTROL_DOWN)
+            | bits(Ef::EVENTFLAG_SHIFT_DOWN)
+            | bits(Ef::EVENTFLAG_IS_REPEAT);
         assert_eq!(down.modifiers, flags);
         #[cfg(target_os = "linux")]
         assert_eq!(down.native_key_code, 38);
