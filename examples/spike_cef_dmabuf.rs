@@ -16,7 +16,6 @@ use cef::*;
 
 #[derive(Clone)]
 struct Config {
-    scale: f32,
     angle: String,
 }
 
@@ -204,7 +203,7 @@ fn main() {
     let fps: i32 = cli.next().and_then(|s| s.parse().ok()).unwrap_or(60);
     let angle = cli.next().unwrap_or_else(|| "vulkan".into());
     // Subprocesses get Chromium's own argv; don't parse it there.
-    let config = Config { scale, angle };
+    let config = Config { angle };
 
     let args = Args::new();
     let mut app = SpikeApp::new(config);
