@@ -43,32 +43,40 @@ impl Browser {
                     this.web.update(cx, |web, _| web.load_url(&url));
                 }
             }),
-            cx.subscribe_in(&web, window, |this, web, event: &WebViewEvent, window, cx| {
-                match event {
-                    WebViewEvent::UrlChanged => {
-                        let url = web.read(cx).url();
-                        this.url.update(cx, |input, cx| input.set_value(url, window, cx));
+            cx.subscribe_in(
+                &web,
+                window,
+                |this, web, event: &WebViewEvent, window, cx| {
+                    match event {
+                        WebViewEvent::UrlChanged => {
+                            let url = web.read(cx).url();
+                            this.url
+                                .update(cx, |input, cx| input.set_value(url, window, cx));
+                        }
+                        WebViewEvent::NewWindow { url, .. } => {
+                            // One page here: open it in place.
+                            let url = url.clone();
+                            web.update(cx, |web, _| web.load_url(&url));
+                        }
+                        WebViewEvent::JsDialog(dialog) => {
+                            this.status = format!("dialog: {}", dialog.message);
+                            web.update(cx, |web, _| web.answer_dialog(true, None));
+                        }
+                        WebViewEvent::DownloadFinished { path, .. } => {
+                            this.status = format!("downloaded {}", path.display());
+                        }
+                        WebViewEvent::ContextMenu(menu) => {
+                            this.status = format!(
+                                "context menu at {:?} link {:?}",
+                                menu.position, menu.link_url
+                            );
+                        }
+                        WebViewEvent::Crashed => this.status = "the page crashed".into(),
+                        _ => {}
                     }
-                    WebViewEvent::NewWindow { url, .. } => {
-                        // One page here: open it in place.
-                        let url = url.clone();
-                        web.update(cx, |web, _| web.load_url(&url));
-                    }
-                    WebViewEvent::JsDialog(dialog) => {
-                        this.status = format!("dialog: {}", dialog.message);
-                        web.update(cx, |web, _| web.answer_dialog(true, None));
-                    }
-                    WebViewEvent::DownloadFinished { path, .. } => {
-                        this.status = format!("downloaded {}", path.display());
-                    }
-                    WebViewEvent::ContextMenu(menu) => {
-                        this.status = format!("context menu at {:?} link {:?}", menu.position, menu.link_url);
-                    }
-                    WebViewEvent::Crashed => this.status = "the page crashed".into(),
-                    _ => {}
-                }
-                cx.notify();
-            }),
+                    cx.notify();
+                },
+            ),
         ];
         Self {
             web,
@@ -84,8 +92,12 @@ impl Render for Browser {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let web = self.web.read(cx);
-        let (back, forward, loading, title) =
-            (web.can_go_back(), web.can_go_forward(), web.is_loading(), web.title());
+        let (back, forward, loading, title) = (
+            web.can_go_back(),
+            web.can_go_forward(),
+            web.is_loading(),
+            web.title(),
+        );
         div()
             .size_full()
             .relative()
@@ -100,18 +112,38 @@ impl Render for Browser {
                             .p_1()
                             .border_b_1()
                             .border_color(theme.border)
-                            .child(Button::new("back").label("←").ghost().small().disabled(!back).on_click(
-                                cx.listener(|this, _, _, cx| this.web.read(cx).go_back()),
-                            ))
-                            .child(Button::new("forward").label("→").ghost().small().disabled(!forward).on_click(
-                                cx.listener(|this, _, _, cx| this.web.read(cx).go_forward()),
-                            ))
-                            .child(Button::new("reload").label(if loading { "×" } else { "⟳" }).ghost().small().on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    let web = this.web.read(cx);
-                                    if loading { web.stop() } else { web.reload() }
-                                }),
-                            ))
+                            .child(
+                                Button::new("back")
+                                    .label("←")
+                                    .ghost()
+                                    .small()
+                                    .disabled(!back)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.web.read(cx).go_back()),
+                                    ),
+                            )
+                            .child(
+                                Button::new("forward")
+                                    .label("→")
+                                    .ghost()
+                                    .small()
+                                    .disabled(!forward)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.web.read(cx).go_forward()
+                                        }),
+                                    ),
+                            )
+                            .child(
+                                Button::new("reload")
+                                    .label(if loading { "×" } else { "⟳" })
+                                    .ghost()
+                                    .small()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let web = this.web.read(cx);
+                                        if loading { web.stop() } else { web.reload() }
+                                    })),
+                            )
                             .child(div().flex_1().child(Input::new(&self.url).small()))
                             .child(
                                 Button::new("popover")
@@ -195,14 +227,19 @@ fn main() {
             cx,
         );
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1100.), px(760.)), cx))),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(1100.), px(760.)),
+                cx,
+            ))),
             window_background: gpui_web::window_background(),
             ..Default::default()
         };
         let start = start.clone();
-        let (window, _) =
-            gpui_kit::open_window(options, cx, move |window, cx| cx.new(|cx| Browser::new(start, window, cx)))
-                .expect("open window");
+        let (window, _) = gpui_kit::open_window(options, cx, move |window, cx| {
+            cx.new(|cx| Browser::new(start, window, cx))
+        })
+        .expect("open window");
         // gpui-component's root paints the theme background over the whole
         // window; the HoleBackground paints it instead, around the page.
         if let Some(root) = window.downcast::<gpui_kit::base::Root>() {

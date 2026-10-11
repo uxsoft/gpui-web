@@ -25,6 +25,7 @@ mod linux {
 
     use gpui_kit::*;
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+    use std::sync::atomic::{AtomicU32, Ordering};
     use wayland_backend::client::{Backend, ObjectId};
     use wayland_client::globals::{GlobalListContents, registry_queue_init};
     use wayland_client::protocol::{
@@ -37,7 +38,6 @@ mod linux {
         wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
         wp_fractional_scale_v1::{self, WpFractionalScaleV1},
     };
-    use std::sync::atomic::{AtomicU32, Ordering};
     use wayland_protocols::wp::viewporter::client::{
         wp_viewport::WpViewport, wp_viewporter::WpViewporter,
     };
@@ -141,16 +141,36 @@ mod linux {
                     }
                 }
             });
-            Ok(Self { conn, qh, shm, surface, subsurface, viewport, size: (0, 0), pos: (i32::MIN, 0), scale })
+            Ok(Self {
+                conn,
+                qh,
+                shm,
+                surface,
+                subsurface,
+                viewport,
+                size: (0, 0),
+                pos: (i32::MIN, 0),
+                scale,
+            })
         }
 
         /// Places the subsurface at `bounds` (logical) with a buffer of
         /// `bounds * scale` pixels. Position applies on GPUI's next commit.
         fn place(&mut self, bounds: Bounds<Pixels>, gpui_scale: f32) {
             let ours = self.scale.load(Ordering::Relaxed);
-            let scale = if ours > 0 { ours as f32 / 120.0 } else { gpui_scale };
-            let pos = (f32::from(bounds.origin.x) as i32, f32::from(bounds.origin.y) as i32);
-            let logical = (f32::from(bounds.size.width) as i32, f32::from(bounds.size.height) as i32);
+            let scale = if ours > 0 {
+                ours as f32 / 120.0
+            } else {
+                gpui_scale
+            };
+            let pos = (
+                f32::from(bounds.origin.x) as i32,
+                f32::from(bounds.origin.y) as i32,
+            );
+            let logical = (
+                f32::from(bounds.size.width) as i32,
+                f32::from(bounds.size.height) as i32,
+            );
             let physical = (
                 (logical.0 as f32 * scale).round() as i32,
                 (logical.1 as f32 * scale).round() as i32,
@@ -160,7 +180,9 @@ mod linux {
                 self.pos = pos;
             }
             if physical != self.size && physical.0 > 0 && physical.1 > 0 {
-                eprintln!("place bounds={bounds:?} gpui_scale={gpui_scale} scale={scale} logical={logical:?} physical={physical:?}");
+                eprintln!(
+                    "place bounds={bounds:?} gpui_scale={gpui_scale} scale={scale} logical={logical:?} physical={physical:?}"
+                );
                 self.size = physical;
                 let buffer = self.checker(physical.0, physical.1);
                 self.surface.attach(Some(&buffer), 0, 0);
@@ -181,13 +203,25 @@ mod linux {
             let file = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
             file.set_len(len as u64).unwrap();
             let map = unsafe {
-                libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0)
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED,
+                    fd,
+                    0,
+                )
             };
-            let pixels = unsafe { std::slice::from_raw_parts_mut(map as *mut u32, (w * h) as usize) };
+            let pixels =
+                unsafe { std::slice::from_raw_parts_mut(map as *mut u32, (w * h) as usize) };
             for y in 0..h {
                 for x in 0..w {
                     pixels[(y * w + x) as usize] = if x < w / 2 {
-                        if (x + y) % 2 == 0 { 0xff000000 } else { 0xffffffff }
+                        if (x + y) % 2 == 0 {
+                            0xff000000
+                        } else {
+                            0xffffffff
+                        }
                     } else {
                         [0xffe04040, 0xff40c040, 0xff4060e0][((y * 3) / h.max(1)) as usize % 3]
                     };
@@ -195,7 +229,8 @@ mod linux {
             }
             unsafe { libc::munmap(map, len) };
             let pool = self.shm.create_pool(file.as_fd(), len as i32, &self.qh, ());
-            let buffer = pool.create_buffer(0, w, h, stride, wl_shm::Format::Xrgb8888, &self.qh, ());
+            let buffer =
+                pool.create_buffer(0, w, h, stride, wl_shm::Format::Xrgb8888, &self.qh, ());
             pool.destroy();
             buffer
         }
@@ -273,7 +308,8 @@ mod linux {
                                         })),
                                 )
                                 .child(self.error.clone().unwrap_or_else(|| {
-                                    "Left half: 1px checker (must be crisp). Right: color bars.".into()
+                                    "Left half: 1px checker (must be crisp). Right: color bars."
+                                        .into()
                                 })),
                         )
                         .child(
@@ -351,7 +387,11 @@ mod linux {
                 ..Default::default()
             };
             cx.open_window(options, |_, cx| {
-                cx.new(|_| Spike { sub: None, popover: true, error: None })
+                cx.new(|_| Spike {
+                    sub: None,
+                    popover: true,
+                    error: None,
+                })
             })
             .unwrap();
         });

@@ -104,12 +104,20 @@ mod unix {
         unsafe {
             assert_eq!(libc::pipe2(to_chrome.as_mut_ptr(), libc::O_CLOEXEC), 0);
             assert_eq!(libc::pipe2(from_chrome.as_mut_ptr(), libc::O_CLOEXEC), 0);
-            let fds = [high(to_chrome[0]), high(to_chrome[1]), high(from_chrome[0]), high(from_chrome[1])];
+            let fds = [
+                high(to_chrome[0]),
+                high(to_chrome[1]),
+                high(from_chrome[0]),
+                high(from_chrome[1]),
+            ];
             assert_eq!(libc::dup2(fds[0], 3), 3);
             assert_eq!(libc::dup2(fds[3], 4), 4);
             libc::close(fds[0]);
             libc::close(fds[3]);
-            (std::fs::File::from_raw_fd(fds[1]), std::fs::File::from_raw_fd(fds[2]))
+            (
+                std::fs::File::from_raw_fd(fds[1]),
+                std::fs::File::from_raw_fd(fds[2]),
+            )
         }
     }
 
@@ -117,13 +125,20 @@ mod unix {
         let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
         let args = Args::new();
         let mut app = SpikeApp::new();
-        let code = execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut());
+        let code = execute_process(
+            Some(args.as_main_args()),
+            Some(&mut app),
+            std::ptr::null_mut(),
+        );
         if code >= 0 {
             std::process::exit(code);
         }
         let show = |at: &str| {
             for fd in [3, 4] {
-                eprintln!("{at}: fd {fd} -> {:?}", std::fs::read_link(format!("/proc/self/fd/{fd}")));
+                eprintln!(
+                    "{at}: fd {fd} -> {:?}",
+                    std::fs::read_link(format!("/proc/self/fd/{fd}"))
+                );
             }
         };
         show("before reserve");
@@ -137,7 +152,10 @@ mod unix {
                 loop {
                     let mut message = Vec::new();
                     match reader.read_until(0, &mut message) {
-                        Ok(0) | Err(_) => { let _ = tx.send("pipe closed".into()); return }
+                        Ok(0) | Err(_) => {
+                            let _ = tx.send("pipe closed".into());
+                            return;
+                        }
                         Ok(_) => {
                             message.pop();
                             let _ = tx.send(format!("pipe: {}", String::from_utf8_lossy(&message)));
@@ -157,7 +175,12 @@ mod unix {
             ..Default::default()
         };
         assert_eq!(
-            initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut()),
+            initialize(
+                Some(args.as_main_args()),
+                Some(&settings),
+                Some(&mut app),
+                std::ptr::null_mut()
+            ),
             1
         );
         show("after initialize");
@@ -207,7 +230,11 @@ mod unix {
         send(5, "Target.createTarget", r#"{"url":"about:blank"}"#);
         pump(2000);
         send(6, "Target.getTargets", "{}");
-        send(7, "Browser.setDownloadBehavior", r#"{"behavior":"default"}"#);
+        send(
+            7,
+            "Browser.setDownloadBehavior",
+            r#"{"behavior":"default"}"#,
+        );
         pump(1000);
 
         host.close_browser(1);
@@ -218,6 +245,10 @@ mod unix {
     }
 
     fn truncate(line: &str) -> String {
-        if line.len() > 600 { format!("{}…", &line[..600]) } else { line.to_string() }
+        if line.len() > 600 {
+            format!("{}…", &line[..600])
+        } else {
+            line.to_string()
+        }
     }
 }

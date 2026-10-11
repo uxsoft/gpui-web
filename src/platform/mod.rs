@@ -2,8 +2,9 @@
 //!
 //! - Wayland: our own `wl_subsurface` below GPUI's surface, fed by one GPU
 //!   blit per frame ([`wayland`]); GPUI leaves a hole where the page is.
-//! - macOS: a pooled `CVPixelBuffer` drawn by GPUI's `surface` element
-//!   ([`macos`]).
+//! - macOS: a layer of our own behind GPUI's view, showing a pool of
+//!   IOSurfaces fed by one Metal blit per frame ([`macos`]); GPUI leaves a
+//!   hole.
 //! - Windows: Chromium's own child window under GPUI's DirectComposition
 //!   target ([`windows`]); GPUI leaves a hole.
 //! - Elsewhere (X11, or when the above can't start): CPU frames drawn as a
@@ -53,12 +54,23 @@ pub(crate) trait Presenter {
     fn hide(&mut self);
 
     /// A GPU frame; returns whether GPUI needs to draw a frame for it.
-    fn on_accelerated_paint(&mut self, _kind: PaintElementType, _info: &AcceleratedPaintInfo) -> bool {
+    fn on_accelerated_paint(
+        &mut self,
+        _kind: PaintElementType,
+        _info: &AcceleratedPaintInfo,
+    ) -> bool {
         false
     }
 
     /// A CPU frame (BGRA); returns whether GPUI needs to draw a frame.
-    fn on_paint(&mut self, _kind: PaintElementType, _dirty: &[Rect], _pixels: &[u8], _width: i32, _height: i32) -> bool {
+    fn on_paint(
+        &mut self,
+        _kind: PaintElementType,
+        _dirty: &[Rect],
+        _pixels: &[u8],
+        _width: i32,
+        _height: i32,
+    ) -> bool {
         false
     }
 
@@ -72,8 +84,10 @@ pub(crate) trait Presenter {
     }
 
     /// The page's browser exists (windowed mode adopts its window).
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     fn set_browser(&mut self, _browser: &cef::Browser) {}
+
+    /// The page gained or lost GPUI's focus.
+    fn focus_changed(&mut self, _focused: bool) {}
 }
 
 fn env(name: &str) -> Option<String> {
@@ -98,7 +112,11 @@ pub(crate) fn mode() -> Mode {
     #[cfg(target_os = "macos")]
     return Mode::SharedTexture;
     #[cfg(target_os = "windows")]
-    return if windows::direct_composition() { Mode::Windowed } else { Mode::Software };
+    return if windows::direct_composition() {
+        Mode::Windowed
+    } else {
+        Mode::Software
+    };
     #[allow(unreachable_code)]
     Mode::Software
 }
@@ -106,7 +124,7 @@ pub(crate) fn mode() -> Mode {
 /// Whether GPUI's window needs to be transparent for holes.
 pub(crate) fn hole_punch_expected() -> bool {
     match mode() {
-        Mode::SharedTexture => cfg!(target_os = "linux"),
+        Mode::SharedTexture => cfg!(any(target_os = "linux", target_os = "macos")),
         // Wayland shows CPU frames through the subsurface too.
         Mode::Software => !force_cpu() && linux_wayland(),
         Mode::Windowed => true,
@@ -132,11 +150,15 @@ pub(crate) fn device_rect_default() -> bool {
 
 /// The browser process's command-line switches for `mode`.
 pub(crate) fn switches(mode: Mode) -> Vec<(String, Option<String>)> {
+    #[cfg_attr(target_os = "windows", allow(unused_mut))]
     let mut switches: Vec<(String, Option<String>)> = vec![
         ("no-startup-window".into(), None),
         ("noerrdialogs".into(), None),
         ("hide-crash-restore-bubble".into(), None),
-        ("disable-features".into(), Some("Translate,MediaRouter".into())),
+        (
+            "disable-features".into(),
+            Some("Translate,MediaRouter".into()),
+        ),
     ];
     #[cfg(target_os = "linux")]
     {
@@ -165,7 +187,10 @@ pub(crate) fn switches(mode: Mode) -> Vec<(String, Option<String>)> {
             None => None,
         };
         if let Some(node) = node {
-            switches.push(("render-node-override".into(), Some(node.to_string_lossy().into())));
+            switches.push((
+                "render-node-override".into(),
+                Some(node.to_string_lossy().into()),
+            ));
         }
     }
     #[cfg(target_os = "macos")]
@@ -193,20 +218,27 @@ pub(crate) fn create(window: &mut Window, mode: Mode) -> Box<dyn Presenter> {
             #[cfg(target_os = "linux")]
             match wayland::WaylandPresenter::new(window) {
                 Ok(presenter) => return Box::new(presenter),
-                Err(err) => tracing::warn!("web view: no Wayland presenter ({err:#}); drawing frames on the CPU"),
+                Err(err) => tracing::warn!(
+                    "web view: no Wayland presenter ({err:#}); drawing frames on the CPU"
+                ),
             }
             #[cfg(target_os = "macos")]
-            match macos::SurfacePresenter::new() {
+            match macos::LayerPresenter::new(window) {
                 Ok(presenter) => return Box::new(presenter),
-                Err(err) => tracing::warn!("web view: no Metal presenter ({err:#}); drawing frames on the CPU"),
+                Err(err) => tracing::warn!(
+                    "web view: no Metal presenter ({err:#}); drawing frames on the CPU"
+                ),
             }
         }
-        Mode::Software => {
+        Mode::Software =>
+        {
             #[cfg(target_os = "linux")]
             if !force_cpu() && wayland::is_wayland_session() {
                 match wayland::WaylandPresenter::new(window) {
                     Ok(presenter) => return Box::new(presenter),
-                    Err(err) => tracing::warn!("web view: no Wayland presenter ({err:#}); drawing frames on the CPU"),
+                    Err(err) => tracing::warn!(
+                        "web view: no Wayland presenter ({err:#}); drawing frames on the CPU"
+                    ),
                 }
             }
         }

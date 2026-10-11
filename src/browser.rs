@@ -48,15 +48,20 @@ impl<T> Local<T> {
     }
 
     pub fn downgrade(&self) -> Weak<T> {
-        assert!(self.on_own_thread(), "gpui_web page used off the main thread");
+        assert!(
+            self.on_own_thread(),
+            "gpui_web page used off the main thread"
+        );
         Rc::downgrade(&self.rc)
     }
-
 }
 
 impl<T> Clone for Local<T> {
     fn clone(&self) -> Self {
-        assert!(self.on_own_thread(), "gpui_web page cloned off the main thread");
+        assert!(
+            self.on_own_thread(),
+            "gpui_web page cloned off the main thread"
+        );
         Self {
             rc: self.rc.clone(),
             thread: self.thread,
@@ -67,7 +72,10 @@ impl<T> Clone for Local<T> {
 impl<T> Deref for Local<T> {
     type Target = T;
     fn deref(&self) -> &T {
-        assert!(self.on_own_thread(), "gpui_web page used off the main thread");
+        assert!(
+            self.on_own_thread(),
+            "gpui_web page used off the main thread"
+        );
         &self.rc
     }
 }
@@ -122,13 +130,13 @@ impl Geometry {
     }
 
     /// View coordinates of a point in logical pixels relative to the page.
-    pub fn to_view(&self, x: f32, y: f32) -> (i32, i32) {
+    pub fn view_point(self, x: f32, y: f32) -> (i32, i32) {
         let k = if self.device_rect { self.scale } else { 1. };
         ((x * k).round() as i32, (y * k).round() as i32)
     }
 
     /// Logical pixels relative to the page of a point in view coordinates.
-    pub fn from_view(&self, x: i32, y: i32) -> (f32, f32) {
+    pub fn logical_point(self, x: i32, y: i32) -> (f32, f32) {
         let k = if self.device_rect { self.scale } else { 1. };
         (x as f32 / k, y as f32 / k)
     }
@@ -203,8 +211,15 @@ pub(crate) enum PageEvent {
     JsDialogClosed,
     FileChooser(FileChooser),
     ContextMenu(ContextMenu),
-    DownloadStarted { name: String, path: PathBuf },
-    DownloadFinished { name: String, path: PathBuf, ok: bool },
+    DownloadStarted {
+        name: String,
+        path: PathBuf,
+    },
+    DownloadFinished {
+        name: String,
+        path: PathBuf,
+        ok: bool,
+    },
     Crashed,
     Ready,
     Closed,
@@ -252,7 +267,10 @@ pub(crate) struct Page {
     /// Kept alive while the page is: the DevTools observer's registration.
     pub registrations: Vec<Registration>,
     /// Pending DevTools calls: message id → reply.
-    pub devtools_calls: Vec<(i32, futures::channel::oneshot::Sender<Result<String, String>>)>,
+    pub devtools_calls: Vec<(
+        i32,
+        futures::channel::oneshot::Sender<Result<String, String>>,
+    )>,
     pub next_devtools_id: i32,
     pub frame_rate: i32,
 }
@@ -416,6 +434,7 @@ pub(crate) fn create_browser(page: &PageRef, url: &str) -> Result<(), String> {
     runtime::ensure_started()?;
     let profile = page.borrow().profile.clone();
     let mut context = profile.context();
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut window_info = window_info(runtime::mode());
     let settings = browser_settings(page.borrow().frame_rate);
     let mut client = client(page);
@@ -425,7 +444,7 @@ pub(crate) fn create_browser(page: &PageRef, url: &str) -> Result<(), String> {
         window_info = crate::platform::windows::child_window_info(window_info);
     }
     let created = browser_host_create_browser(
-        Some(&mut window_info),
+        Some(&window_info),
         Some(&mut client),
         Some(&url.into()),
         Some(&settings),
@@ -477,53 +496,60 @@ fn client(page: &PageRef) -> Client {
     )
 }
 
-wrap_client! {
-    struct WebClient {
-        render: RenderHandler,
-        display: DisplayHandler,
-        load: LoadHandler,
-        life_span: LifeSpanHandler,
-        request: RequestHandler,
-        context_menu: ContextMenuHandler,
-        js_dialog: JsdialogHandler,
-        dialog: DialogHandler,
-        download: DownloadHandler,
-        keyboard: Option<KeyboardHandler>,
-    }
+// The client hands CEF one handler of each kind.
+#[allow(clippy::too_many_arguments)]
+mod client {
+    use super::*;
 
-    impl Client {
-        fn render_handler(&self) -> Option<RenderHandler> {
-            Some(self.render.clone())
+    wrap_client! {
+        pub(super) struct WebClient {
+            render: RenderHandler,
+            display: DisplayHandler,
+            load: LoadHandler,
+            life_span: LifeSpanHandler,
+            request: RequestHandler,
+            context_menu: ContextMenuHandler,
+            js_dialog: JsdialogHandler,
+            dialog: DialogHandler,
+            download: DownloadHandler,
+            keyboard: Option<KeyboardHandler>,
         }
-        fn display_handler(&self) -> Option<DisplayHandler> {
-            Some(self.display.clone())
-        }
-        fn load_handler(&self) -> Option<LoadHandler> {
-            Some(self.load.clone())
-        }
-        fn life_span_handler(&self) -> Option<LifeSpanHandler> {
-            Some(self.life_span.clone())
-        }
-        fn request_handler(&self) -> Option<RequestHandler> {
-            Some(self.request.clone())
-        }
-        fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
-            Some(self.context_menu.clone())
-        }
-        fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
-            Some(self.js_dialog.clone())
-        }
-        fn dialog_handler(&self) -> Option<DialogHandler> {
-            Some(self.dialog.clone())
-        }
-        fn download_handler(&self) -> Option<DownloadHandler> {
-            Some(self.download.clone())
-        }
-        fn keyboard_handler(&self) -> Option<KeyboardHandler> {
-            self.keyboard.clone()
+
+        impl Client {
+            fn render_handler(&self) -> Option<RenderHandler> {
+                Some(self.render.clone())
+            }
+            fn display_handler(&self) -> Option<DisplayHandler> {
+                Some(self.display.clone())
+            }
+            fn load_handler(&self) -> Option<LoadHandler> {
+                Some(self.load.clone())
+            }
+            fn life_span_handler(&self) -> Option<LifeSpanHandler> {
+                Some(self.life_span.clone())
+            }
+            fn request_handler(&self) -> Option<RequestHandler> {
+                Some(self.request.clone())
+            }
+            fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
+                Some(self.context_menu.clone())
+            }
+            fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
+                Some(self.js_dialog.clone())
+            }
+            fn dialog_handler(&self) -> Option<DialogHandler> {
+                Some(self.dialog.clone())
+            }
+            fn download_handler(&self) -> Option<DownloadHandler> {
+                Some(self.download.clone())
+            }
+            fn keyboard_handler(&self) -> Option<KeyboardHandler> {
+                self.keyboard.clone()
+            }
         }
     }
 }
+use client::WebClient;
 
 /// Runs `f` on the page unless something already holds it (a handler called
 /// back from inside a call into CEF that holds the page).
@@ -536,6 +562,14 @@ fn with_page<R>(page: &PageRef, f: impl FnOnce(&mut Page) -> R) -> Option<R> {
         }
     }
 }
+
+/// The platform's cursor handle, as the display handler receives it.
+#[cfg(target_os = "windows")]
+type CursorHandle = cef::sys::HCURSOR;
+#[cfg(target_os = "macos")]
+type CursorHandle = *mut u8;
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+type CursorHandle = ::std::os::raw::c_ulong;
 
 fn cef_string(s: Option<&CefString>) -> String {
     s.map(|s| s.to_string()).unwrap_or_default()
@@ -705,7 +739,7 @@ wrap_display_handler! {
         fn on_cursor_change(
             &self,
             _browser: Option<&mut Browser>,
-            _cursor: ::std::os::raw::c_ulong,
+            _cursor: CursorHandle,
             type_: CursorType,
             _custom_cursor_info: Option<&CursorInfo>,
         ) -> ::std::os::raw::c_int {
@@ -984,7 +1018,7 @@ wrap_context_menu_handler! {
             let media = userfree(&params.source_url());
             let (x, y) = (params.xcoord(), params.ycoord());
             with_page(&self.page, |p| {
-                let (x, y) = p.geometry.from_view(x, y);
+                let (x, y) = p.geometry.logical_point(x, y);
                 p.push(PageEvent::ContextMenu(ContextMenu {
                     position: gpui::point(gpui::px(x), gpui::px(y)),
                     link_url: (!link.is_empty()).then_some(link),
@@ -1200,7 +1234,7 @@ wrap_keyboard_handler! {
             &self,
             _browser: Option<&mut Browser>,
             event: Option<&KeyEvent>,
-            _os_event: Option<&mut MSG>,
+            _os_event: Option<&mut cef::sys::MSG>,
             is_keyboard_shortcut: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
             // Only windowed pages have keyboard focus of their own; give the
@@ -1235,13 +1269,21 @@ mod tests {
 
     #[test]
     fn device_rect_geometry_keeps_css_pixels_logical() {
-        let g = Geometry { width: 800., height: 600., scale: 1.5, device_rect: true };
+        let g = Geometry {
+            width: 800.,
+            height: 600.,
+            scale: 1.5,
+            device_rect: true,
+        };
         assert_eq!(g.view_size(), (1200, 900));
         assert_eq!(g.device_scale_factor(), 1.);
         assert!((1.2f64.powf(g.zoom_level()) - 1.5).abs() < 1e-9);
-        assert_eq!(g.to_view(10., 20.), (15, 30));
-        assert_eq!(g.from_view(15, 30), (10., 20.));
-        let n = Geometry { device_rect: false, ..g };
+        assert_eq!(g.view_point(10., 20.), (15, 30));
+        assert_eq!(g.logical_point(15, 30), (10., 20.));
+        let n = Geometry {
+            device_rect: false,
+            ..g
+        };
         assert_eq!(n.view_size(), (800, 600));
         assert_eq!(n.device_scale_factor(), 1.5);
         assert_eq!(n.zoom_level(), 0.);

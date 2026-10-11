@@ -10,7 +10,7 @@ pub(crate) fn event_flags(modifiers: &Modifiers, buttons: &[MouseButton]) -> u32
     let mut flags = 0;
     let mut set = |on: bool, flag: Ef| {
         if on {
-            flags |= flag.0;
+            flags |= flag.0 as u32;
         }
     };
     set(modifiers.shift, Ef::EVENTFLAG_SHIFT_DOWN);
@@ -96,10 +96,10 @@ pub(crate) fn key_code(keystroke: &Keystroke) -> Option<(String, i32)> {
 fn native_code(code: &str) -> i32 {
     #[cfg(target_os = "macos")]
     let table = MAC;
-    #[cfg(not(target_os = "macos"))]
-    let table = XKB;
     #[cfg(target_os = "windows")]
     let table = WIN_SCAN;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let table = XKB;
     table
         .iter()
         .find(|(c, _)| *c == code)
@@ -107,66 +107,252 @@ fn native_code(code: &str) -> i32 {
 }
 
 /// Linux evdev codes + 8.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const XKB: &[(&str, i32)] = &[
-    ("Escape", 9), ("Digit1", 10), ("Digit2", 11), ("Digit3", 12), ("Digit4", 13),
-    ("Digit5", 14), ("Digit6", 15), ("Digit7", 16), ("Digit8", 17), ("Digit9", 18),
-    ("Digit0", 19), ("Minus", 20), ("Equal", 21), ("Backspace", 22), ("Tab", 23),
-    ("KeyQ", 24), ("KeyW", 25), ("KeyE", 26), ("KeyR", 27), ("KeyT", 28), ("KeyY", 29),
-    ("KeyU", 30), ("KeyI", 31), ("KeyO", 32), ("KeyP", 33), ("BracketLeft", 34),
-    ("BracketRight", 35), ("Enter", 36), ("ControlLeft", 37), ("KeyA", 38), ("KeyS", 39),
-    ("KeyD", 40), ("KeyF", 41), ("KeyG", 42), ("KeyH", 43), ("KeyJ", 44), ("KeyK", 45),
-    ("KeyL", 46), ("Semicolon", 47), ("Quote", 48), ("Backquote", 49), ("ShiftLeft", 50),
-    ("Backslash", 51), ("KeyZ", 52), ("KeyX", 53), ("KeyC", 54), ("KeyV", 55), ("KeyB", 56),
-    ("KeyN", 57), ("KeyM", 58), ("Comma", 59), ("Period", 60), ("Slash", 61),
-    ("AltLeft", 64), ("Space", 65), ("F1", 67), ("F2", 68), ("F3", 69), ("F4", 70),
-    ("F5", 71), ("F6", 72), ("F7", 73), ("F8", 74), ("F9", 75), ("F10", 76), ("F11", 95),
-    ("F12", 96), ("Home", 110), ("ArrowUp", 111), ("PageUp", 112), ("ArrowLeft", 113),
-    ("ArrowRight", 114), ("End", 115), ("ArrowDown", 116), ("PageDown", 117),
-    ("Insert", 118), ("Delete", 119), ("MetaLeft", 133), ("ContextMenu", 135),
+    ("Escape", 9),
+    ("Digit1", 10),
+    ("Digit2", 11),
+    ("Digit3", 12),
+    ("Digit4", 13),
+    ("Digit5", 14),
+    ("Digit6", 15),
+    ("Digit7", 16),
+    ("Digit8", 17),
+    ("Digit9", 18),
+    ("Digit0", 19),
+    ("Minus", 20),
+    ("Equal", 21),
+    ("Backspace", 22),
+    ("Tab", 23),
+    ("KeyQ", 24),
+    ("KeyW", 25),
+    ("KeyE", 26),
+    ("KeyR", 27),
+    ("KeyT", 28),
+    ("KeyY", 29),
+    ("KeyU", 30),
+    ("KeyI", 31),
+    ("KeyO", 32),
+    ("KeyP", 33),
+    ("BracketLeft", 34),
+    ("BracketRight", 35),
+    ("Enter", 36),
+    ("ControlLeft", 37),
+    ("KeyA", 38),
+    ("KeyS", 39),
+    ("KeyD", 40),
+    ("KeyF", 41),
+    ("KeyG", 42),
+    ("KeyH", 43),
+    ("KeyJ", 44),
+    ("KeyK", 45),
+    ("KeyL", 46),
+    ("Semicolon", 47),
+    ("Quote", 48),
+    ("Backquote", 49),
+    ("ShiftLeft", 50),
+    ("Backslash", 51),
+    ("KeyZ", 52),
+    ("KeyX", 53),
+    ("KeyC", 54),
+    ("KeyV", 55),
+    ("KeyB", 56),
+    ("KeyN", 57),
+    ("KeyM", 58),
+    ("Comma", 59),
+    ("Period", 60),
+    ("Slash", 61),
+    ("AltLeft", 64),
+    ("Space", 65),
+    ("F1", 67),
+    ("F2", 68),
+    ("F3", 69),
+    ("F4", 70),
+    ("F5", 71),
+    ("F6", 72),
+    ("F7", 73),
+    ("F8", 74),
+    ("F9", 75),
+    ("F10", 76),
+    ("F11", 95),
+    ("F12", 96),
+    ("Home", 110),
+    ("ArrowUp", 111),
+    ("PageUp", 112),
+    ("ArrowLeft", 113),
+    ("ArrowRight", 114),
+    ("End", 115),
+    ("ArrowDown", 116),
+    ("PageDown", 117),
+    ("Insert", 118),
+    ("Delete", 119),
+    ("MetaLeft", 133),
+    ("ContextMenu", 135),
 ];
 
 #[cfg(target_os = "macos")]
 const MAC: &[(&str, i32)] = &[
-    ("KeyA", 0x00), ("KeyS", 0x01), ("KeyD", 0x02), ("KeyF", 0x03), ("KeyH", 0x04),
-    ("KeyG", 0x05), ("KeyZ", 0x06), ("KeyX", 0x07), ("KeyC", 0x08), ("KeyV", 0x09),
-    ("KeyB", 0x0b), ("KeyQ", 0x0c), ("KeyW", 0x0d), ("KeyE", 0x0e), ("KeyR", 0x0f),
-    ("KeyY", 0x10), ("KeyT", 0x11), ("Digit1", 0x12), ("Digit2", 0x13), ("Digit3", 0x14),
-    ("Digit4", 0x15), ("Digit6", 0x16), ("Digit5", 0x17), ("Equal", 0x18), ("Digit9", 0x19),
-    ("Digit7", 0x1a), ("Minus", 0x1b), ("Digit8", 0x1c), ("Digit0", 0x1d),
-    ("BracketRight", 0x1e), ("KeyO", 0x1f), ("KeyU", 0x20), ("BracketLeft", 0x21),
-    ("KeyI", 0x22), ("KeyP", 0x23), ("Enter", 0x24), ("KeyL", 0x25), ("KeyJ", 0x26),
-    ("Quote", 0x27), ("KeyK", 0x28), ("Semicolon", 0x29), ("Backslash", 0x2a),
-    ("Comma", 0x2b), ("Slash", 0x2c), ("KeyN", 0x2d), ("KeyM", 0x2e), ("Period", 0x2f),
-    ("Tab", 0x30), ("Space", 0x31), ("Backquote", 0x32), ("Backspace", 0x33),
-    ("Escape", 0x35), ("MetaLeft", 0x37), ("ShiftLeft", 0x38), ("AltLeft", 0x3a),
-    ("ControlLeft", 0x3b), ("F5", 0x60), ("F6", 0x61), ("F7", 0x62), ("F3", 0x63),
-    ("F8", 0x64), ("F9", 0x65), ("F11", 0x67), ("F10", 0x6d), ("F12", 0x6f),
-    ("Home", 0x73), ("PageUp", 0x74), ("Delete", 0x75), ("F4", 0x76), ("End", 0x77),
-    ("F2", 0x78), ("PageDown", 0x79), ("F1", 0x7a), ("ArrowLeft", 0x7b),
-    ("ArrowRight", 0x7c), ("ArrowDown", 0x7d), ("ArrowUp", 0x7e),
+    ("KeyA", 0x00),
+    ("KeyS", 0x01),
+    ("KeyD", 0x02),
+    ("KeyF", 0x03),
+    ("KeyH", 0x04),
+    ("KeyG", 0x05),
+    ("KeyZ", 0x06),
+    ("KeyX", 0x07),
+    ("KeyC", 0x08),
+    ("KeyV", 0x09),
+    ("KeyB", 0x0b),
+    ("KeyQ", 0x0c),
+    ("KeyW", 0x0d),
+    ("KeyE", 0x0e),
+    ("KeyR", 0x0f),
+    ("KeyY", 0x10),
+    ("KeyT", 0x11),
+    ("Digit1", 0x12),
+    ("Digit2", 0x13),
+    ("Digit3", 0x14),
+    ("Digit4", 0x15),
+    ("Digit6", 0x16),
+    ("Digit5", 0x17),
+    ("Equal", 0x18),
+    ("Digit9", 0x19),
+    ("Digit7", 0x1a),
+    ("Minus", 0x1b),
+    ("Digit8", 0x1c),
+    ("Digit0", 0x1d),
+    ("BracketRight", 0x1e),
+    ("KeyO", 0x1f),
+    ("KeyU", 0x20),
+    ("BracketLeft", 0x21),
+    ("KeyI", 0x22),
+    ("KeyP", 0x23),
+    ("Enter", 0x24),
+    ("KeyL", 0x25),
+    ("KeyJ", 0x26),
+    ("Quote", 0x27),
+    ("KeyK", 0x28),
+    ("Semicolon", 0x29),
+    ("Backslash", 0x2a),
+    ("Comma", 0x2b),
+    ("Slash", 0x2c),
+    ("KeyN", 0x2d),
+    ("KeyM", 0x2e),
+    ("Period", 0x2f),
+    ("Tab", 0x30),
+    ("Space", 0x31),
+    ("Backquote", 0x32),
+    ("Backspace", 0x33),
+    ("Escape", 0x35),
+    ("MetaLeft", 0x37),
+    ("ShiftLeft", 0x38),
+    ("AltLeft", 0x3a),
+    ("ControlLeft", 0x3b),
+    ("F5", 0x60),
+    ("F6", 0x61),
+    ("F7", 0x62),
+    ("F3", 0x63),
+    ("F8", 0x64),
+    ("F9", 0x65),
+    ("F11", 0x67),
+    ("F10", 0x6d),
+    ("F12", 0x6f),
+    ("Home", 0x73),
+    ("PageUp", 0x74),
+    ("Delete", 0x75),
+    ("F4", 0x76),
+    ("End", 0x77),
+    ("F2", 0x78),
+    ("PageDown", 0x79),
+    ("F1", 0x7a),
+    ("ArrowLeft", 0x7b),
+    ("ArrowRight", 0x7c),
+    ("ArrowDown", 0x7d),
+    ("ArrowUp", 0x7e),
 ];
 
 /// Windows scan codes (set 1); extended keys have 0xe0 in the high byte.
 #[cfg(target_os = "windows")]
 const WIN_SCAN: &[(&str, i32)] = &[
-    ("Escape", 0x01), ("Digit1", 0x02), ("Digit2", 0x03), ("Digit3", 0x04), ("Digit4", 0x05),
-    ("Digit5", 0x06), ("Digit6", 0x07), ("Digit7", 0x08), ("Digit8", 0x09), ("Digit9", 0x0a),
-    ("Digit0", 0x0b), ("Minus", 0x0c), ("Equal", 0x0d), ("Backspace", 0x0e), ("Tab", 0x0f),
-    ("KeyQ", 0x10), ("KeyW", 0x11), ("KeyE", 0x12), ("KeyR", 0x13), ("KeyT", 0x14),
-    ("KeyY", 0x15), ("KeyU", 0x16), ("KeyI", 0x17), ("KeyO", 0x18), ("KeyP", 0x19),
-    ("BracketLeft", 0x1a), ("BracketRight", 0x1b), ("Enter", 0x1c), ("ControlLeft", 0x1d),
-    ("KeyA", 0x1e), ("KeyS", 0x1f), ("KeyD", 0x20), ("KeyF", 0x21), ("KeyG", 0x22),
-    ("KeyH", 0x23), ("KeyJ", 0x24), ("KeyK", 0x25), ("KeyL", 0x26), ("Semicolon", 0x27),
-    ("Quote", 0x28), ("Backquote", 0x29), ("ShiftLeft", 0x2a), ("Backslash", 0x2b),
-    ("KeyZ", 0x2c), ("KeyX", 0x2d), ("KeyC", 0x2e), ("KeyV", 0x2f), ("KeyB", 0x30),
-    ("KeyN", 0x31), ("KeyM", 0x32), ("Comma", 0x33), ("Period", 0x34), ("Slash", 0x35),
-    ("AltLeft", 0x38), ("Space", 0x39), ("F1", 0x3b), ("F2", 0x3c), ("F3", 0x3d),
-    ("F4", 0x3e), ("F5", 0x3f), ("F6", 0x40), ("F7", 0x41), ("F8", 0x42), ("F9", 0x43),
-    ("F10", 0x44), ("F11", 0x57), ("F12", 0x58), ("Home", 0xe047), ("ArrowUp", 0xe048),
-    ("PageUp", 0xe049), ("ArrowLeft", 0xe04b), ("ArrowRight", 0xe04d), ("End", 0xe04f),
-    ("ArrowDown", 0xe050), ("PageDown", 0xe051), ("Insert", 0xe052), ("Delete", 0xe053),
-    ("MetaLeft", 0xe05b), ("ContextMenu", 0xe05d),
+    ("Escape", 0x01),
+    ("Digit1", 0x02),
+    ("Digit2", 0x03),
+    ("Digit3", 0x04),
+    ("Digit4", 0x05),
+    ("Digit5", 0x06),
+    ("Digit6", 0x07),
+    ("Digit7", 0x08),
+    ("Digit8", 0x09),
+    ("Digit9", 0x0a),
+    ("Digit0", 0x0b),
+    ("Minus", 0x0c),
+    ("Equal", 0x0d),
+    ("Backspace", 0x0e),
+    ("Tab", 0x0f),
+    ("KeyQ", 0x10),
+    ("KeyW", 0x11),
+    ("KeyE", 0x12),
+    ("KeyR", 0x13),
+    ("KeyT", 0x14),
+    ("KeyY", 0x15),
+    ("KeyU", 0x16),
+    ("KeyI", 0x17),
+    ("KeyO", 0x18),
+    ("KeyP", 0x19),
+    ("BracketLeft", 0x1a),
+    ("BracketRight", 0x1b),
+    ("Enter", 0x1c),
+    ("ControlLeft", 0x1d),
+    ("KeyA", 0x1e),
+    ("KeyS", 0x1f),
+    ("KeyD", 0x20),
+    ("KeyF", 0x21),
+    ("KeyG", 0x22),
+    ("KeyH", 0x23),
+    ("KeyJ", 0x24),
+    ("KeyK", 0x25),
+    ("KeyL", 0x26),
+    ("Semicolon", 0x27),
+    ("Quote", 0x28),
+    ("Backquote", 0x29),
+    ("ShiftLeft", 0x2a),
+    ("Backslash", 0x2b),
+    ("KeyZ", 0x2c),
+    ("KeyX", 0x2d),
+    ("KeyC", 0x2e),
+    ("KeyV", 0x2f),
+    ("KeyB", 0x30),
+    ("KeyN", 0x31),
+    ("KeyM", 0x32),
+    ("Comma", 0x33),
+    ("Period", 0x34),
+    ("Slash", 0x35),
+    ("AltLeft", 0x38),
+    ("Space", 0x39),
+    ("F1", 0x3b),
+    ("F2", 0x3c),
+    ("F3", 0x3d),
+    ("F4", 0x3e),
+    ("F5", 0x3f),
+    ("F6", 0x40),
+    ("F7", 0x41),
+    ("F8", 0x42),
+    ("F9", 0x43),
+    ("F10", 0x44),
+    ("F11", 0x57),
+    ("F12", 0x58),
+    ("Home", 0xe047),
+    ("ArrowUp", 0xe048),
+    ("PageUp", 0xe049),
+    ("ArrowLeft", 0xe04b),
+    ("ArrowRight", 0xe04d),
+    ("End", 0xe04f),
+    ("ArrowDown", 0xe050),
+    ("PageDown", 0xe051),
+    ("Insert", 0xe052),
+    ("Delete", 0xe053),
+    ("MetaLeft", 0xe05b),
+    ("ContextMenu", 0xe05d),
 ];
 
 fn key_event(kind: Kt, vk: i32, native: i32, modifiers: u32, character: u16) -> KeyEvent {
@@ -187,15 +373,25 @@ pub(crate) fn key_down_up(keystroke: &Keystroke, down: bool, repeat: bool) -> Op
     let (code, vk) = key_code(keystroke)?;
     let mut modifiers = event_flags(&keystroke.modifiers, &[]);
     if repeat {
-        modifiers |= Ef::EVENTFLAG_IS_REPEAT.0;
+        modifiers |= Ef::EVENTFLAG_IS_REPEAT.0 as u32;
     }
     let character = keystroke
         .key_char
         .as_deref()
         .and_then(|c| c.encode_utf16().next())
         .unwrap_or(0);
-    let kind = if down { Kt::KEYEVENT_RAWKEYDOWN } else { Kt::KEYEVENT_KEYUP };
-    Some(key_event(kind, vk, native_code(&code), modifiers, character))
+    let kind = if down {
+        Kt::KEYEVENT_RAWKEYDOWN
+    } else {
+        Kt::KEYEVENT_KEYUP
+    };
+    Some(key_event(
+        kind,
+        vk,
+        native_code(&code),
+        modifiers,
+        character,
+    ))
 }
 
 /// The CEF events typing `text`.
@@ -204,7 +400,11 @@ pub(crate) fn char_events(text: &str, modifiers: &Modifiers) -> Vec<KeyEvent> {
     text.encode_utf16()
         .map(|unit| {
             // Chromium expects Enter as a carriage return.
-            let unit = if unit == u16::from(b'\n') { u16::from(b'\r') } else { unit };
+            let unit = if unit == u16::from(b'\n') {
+                u16::from(b'\r')
+            } else {
+                unit
+            };
             key_event(Kt::KEYEVENT_CHAR, i32::from(unit), 0, flags, unit)
         })
         .collect()
@@ -223,19 +423,39 @@ pub(crate) fn keystroke_of(event: &KeyEvent) -> Option<Keystroke> {
         0x70..=0x87 => format!("f{}", vk - 0x6f),
         _ => {
             let (name, _) = [
-                ("enter", 0x0d), ("tab", 0x09), ("backspace", 0x08), ("escape", 0x1b),
-                ("delete", 0x2e), ("insert", 0x2d), ("home", 0x24), ("end", 0x23),
-                ("pageup", 0x21), ("pagedown", 0x22), ("left", 0x25), ("up", 0x26),
-                ("right", 0x27), ("down", 0x28), ("space", 0x20), ("-", 0xbd), ("=", 0xbb),
-                ("[", 0xdb), ("]", 0xdd), ("\\", 0xdc), (";", 0xba), ("'", 0xde),
-                (",", 0xbc), (".", 0xbe), ("/", 0xbf), ("`", 0xc0),
+                ("enter", 0x0d),
+                ("tab", 0x09),
+                ("backspace", 0x08),
+                ("escape", 0x1b),
+                ("delete", 0x2e),
+                ("insert", 0x2d),
+                ("home", 0x24),
+                ("end", 0x23),
+                ("pageup", 0x21),
+                ("pagedown", 0x22),
+                ("left", 0x25),
+                ("up", 0x26),
+                ("right", 0x27),
+                ("down", 0x28),
+                ("space", 0x20),
+                ("-", 0xbd),
+                ("=", 0xbb),
+                ("[", 0xdb),
+                ("]", 0xdd),
+                ("\\", 0xdc),
+                (";", 0xba),
+                ("'", 0xde),
+                (",", 0xbc),
+                (".", 0xbe),
+                ("/", 0xbf),
+                ("`", 0xc0),
             ]
             .into_iter()
             .find(|(_, code)| *code == vk)?;
             name.to_string()
         }
     };
-    let has = |flag: Ef| event.modifiers & flag.0 != 0;
+    let has = |flag: Ef| event.modifiers & flag.0 as u32 != 0;
     Some(Keystroke {
         modifiers: Modifiers {
             control: has(Ef::EVENTFLAG_CONTROL_DOWN),
@@ -307,7 +527,9 @@ mod tests {
         let down = key_down_up(&stroke("ctrl-shift-a"), true, true).unwrap();
         assert_eq!(Kt::from(down.type_), Kt::KEYEVENT_RAWKEYDOWN);
         assert_eq!(down.windows_key_code, 0x41);
-        let flags = Ef::EVENTFLAG_CONTROL_DOWN.0 | Ef::EVENTFLAG_SHIFT_DOWN.0 | Ef::EVENTFLAG_IS_REPEAT.0;
+        let flags = (Ef::EVENTFLAG_CONTROL_DOWN.0
+            | Ef::EVENTFLAG_SHIFT_DOWN.0
+            | Ef::EVENTFLAG_IS_REPEAT.0) as u32;
         assert_eq!(down.modifiers, flags);
         #[cfg(target_os = "linux")]
         assert_eq!(down.native_key_code, 38);

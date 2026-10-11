@@ -33,7 +33,9 @@ thread_local! {
 
 fn begin_frame(window: &Window) {
     FRAMES.with_borrow_mut(|frames| {
-        let frame = frames.entry(window.window_handle().window_id()).or_default();
+        let frame = frames
+            .entry(window.window_handle().window_id())
+            .or_default();
         frame.previous = std::mem::take(&mut frame.pages);
         frame.holes.clear();
     });
@@ -41,7 +43,9 @@ fn begin_frame(window: &Window) {
 
 fn register(window: &Window, page: &PageRef, hole: Option<Bounds<Pixels>>) {
     FRAMES.with_borrow_mut(|frames| {
-        let frame = frames.entry(window.window_handle().window_id()).or_default();
+        let frame = frames
+            .entry(window.window_handle().window_id())
+            .or_default();
         frame.pages.push(page.downgrade());
         frame.holes.extend(hole);
     });
@@ -98,7 +102,9 @@ pub struct HoleBackground {
 
 impl HoleBackground {
     pub fn new(color: impl Into<Hsla>) -> Self {
-        Self { color: color.into() }
+        Self {
+            color: color.into(),
+        }
     }
 }
 
@@ -128,11 +134,13 @@ impl Element for HoleBackground {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        let mut style = Style::default();
-        style.position = gpui::Position::Absolute;
+        let mut style = Style {
+            position: gpui::Position::Absolute,
+            size: size(relative(1.).into(), relative(1.).into()),
+            ..Default::default()
+        };
         style.inset.top = px(0.).into();
         style.inset.left = px(0.).into();
-        style.size = size(relative(1.).into(), relative(1.).into());
         (window.request_layout(style, [], cx), ())
     }
 
@@ -264,9 +272,11 @@ impl Element for WebViewElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        let mut style = Style::default();
-        style.size = size(relative(1.).into(), relative(1.).into());
-        style.flex_grow = 1.;
+        let style = Style {
+            size: size(relative(1.).into(), relative(1.).into()),
+            flex_grow: 1.,
+            ..Default::default()
+        };
         (window.request_layout(style, [], cx), ())
     }
 
@@ -284,19 +294,26 @@ impl Element for WebViewElement {
         if page.presenter.is_none() && !page.closed {
             page.presenter = Some(platform::create(window, runtime::mode()));
         }
-        let (punches_hole, has_content, scale) = page.presenter.as_ref().map_or(
-            (false, false, None),
-            |p| (p.punches_hole(), p.has_content(), p.scale()),
-        );
+        let (punches_hole, has_content, scale) =
+            page.presenter.as_ref().map_or((false, false, None), |p| {
+                (p.punches_hole(), p.has_content(), p.scale())
+            });
         let scale = scale.unwrap_or_else(|| window.scale_factor());
-        let snapped = if punches_hole { snap(bounds, scale) } else { bounds };
+        let snapped = if punches_hole {
+            snap(bounds, scale)
+        } else {
+            bounds
+        };
         let visible = snapped.intersect(&window.content_mask().bounds);
         drop(page);
         let hole = (punches_hole && has_content).then_some(visible);
         register(window, &self.page, hole);
         Prepainted {
             hitbox,
-            placement: Placement { bounds: snapped, visible },
+            placement: Placement {
+                bounds: snapped,
+                visible,
+            },
         }
     }
 
@@ -376,8 +393,18 @@ impl Element for WebViewElement {
             view.window = Some(window_handle);
             std::mem::replace(&mut view.focused, focused) != focused
         });
-        if focus_changed && let Some(host) = &host {
-            host.set_focus(focused as i32);
+        if focus_changed {
+            if let Some(host) = &host {
+                host.set_focus(focused as i32);
+            }
+            if let Some(presenter) = &mut self.page.borrow_mut().presenter {
+                presenter.focus_changed(focused);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        if self.page.borrow().app_keystrokes.is_empty() {
+            let keystrokes = app_keystrokes(cx);
+            self.page.borrow_mut().app_keystrokes = keystrokes;
         }
         if focused {
             window.handle_input(
@@ -398,7 +425,7 @@ impl WebViewElement {
             let page = self.page.clone();
             move |position: gpui::Point<Pixels>, modifiers: u32| -> MouseEvent {
                 let geometry = page.borrow().geometry;
-                let (x, y) = geometry.to_view(
+                let (x, y) = geometry.view_point(
                     f32::from(position.x - origin.x),
                     f32::from(position.y - origin.y),
                 );
@@ -483,7 +510,10 @@ impl WebViewElement {
                     let Some(host) = host else { return };
                     let flags = crate::input::event_flags(&event.modifiers, &view.pressed);
                     let leave = !hovered && view.pressed.is_empty();
-                    host.send_mouse_move_event(Some(&event_at(event.position, flags)), leave as i32);
+                    host.send_mouse_move_event(
+                        Some(&event_at(event.position, flags)),
+                        leave as i32,
+                    );
                 });
             }
         });
@@ -497,7 +527,11 @@ impl WebViewElement {
                     return;
                 }
                 let geometry = page.borrow().geometry;
-                let k = if geometry.device_rect { geometry.scale } else { 1. };
+                let k = if geometry.device_rect {
+                    geometry.scale
+                } else {
+                    1.
+                };
                 let (dx, dy) = match event.delta {
                     ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y)),
                     ScrollDelta::Lines(delta) => (delta.x * 40., delta.y * 40.),
@@ -516,6 +550,31 @@ impl WebViewElement {
             }
         });
     }
+}
+
+/// The first keystrokes of the app's shortcuts, which a windowed page must
+/// hand back to GPUI.
+#[cfg(target_os = "windows")]
+fn app_keystrokes(cx: &App) -> Vec<gpui::Keystroke> {
+    let keymap = cx.key_bindings();
+    let keymap = keymap.borrow();
+    let mut keystrokes: Vec<gpui::Keystroke> = Vec::new();
+    for binding in keymap.bindings() {
+        let Some(first) = binding.keystrokes().first() else {
+            continue;
+        };
+        let keystroke = first.inner().clone();
+        let m = &keystroke.modifiers;
+        let shortcut = m.control || m.alt || m.platform || keystroke.key.starts_with('f');
+        if shortcut
+            && !keystrokes
+                .iter()
+                .any(|k| crate::input::same_keystroke(k, &keystroke))
+        {
+            keystrokes.push(keystroke);
+        }
+    }
+    keystrokes
 }
 
 fn mouse_button(button: MouseButton) -> MouseButtonType {
@@ -548,8 +607,10 @@ mod tests {
         let rects = subtract(outer, &[rect(10., 20., 30., 40.)]);
         assert_eq!(area(&rects), 100. * 100. - 30. * 40.);
         for r in &rects {
-            assert!(r.intersect(&rect(10., 20., 30., 40.)).size.width <= px(0.)
-                || r.intersect(&rect(10., 20., 30., 40.)).size.height <= px(0.));
+            assert!(
+                r.intersect(&rect(10., 20., 30., 40.)).size.width <= px(0.)
+                    || r.intersect(&rect(10., 20., 30., 40.)).size.height <= px(0.)
+            );
         }
         // A hole sticking out of the window, and two holes.
         let rects = subtract(outer, &[rect(90., 90., 50., 50.), rect(0., 0., 10., 10.)]);
@@ -560,7 +621,10 @@ mod tests {
     fn pages_snap_to_device_pixels() {
         // 1.5: even logical pixels.
         let s = snap(rect(17., 58.5, 801., 400.), 1.5);
-        assert_eq!(s, Bounds::from_corners(point(px(18.), point_y(60.)), point(px(818.), point_y(458.))));
+        assert_eq!(
+            s,
+            Bounds::from_corners(point(px(18.), point_y(60.)), point(px(818.), point_y(458.)))
+        );
         // 1.25: multiples of 4.
         let s = snap(rect(1., 1., 100., 100.), 1.25);
         assert_eq!(s.origin, point(px(4.), px(4.)));

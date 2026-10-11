@@ -13,7 +13,8 @@ static RESERVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 #[cfg(unix)]
 pub(crate) fn reserve_pipe() {
     use std::os::fd::FromRawFd;
-    /// Moves `fd` out of the way of 3 and 4, which `pipe2` may hand out.
+    /// Moves `fd` out of the way of 3 and 4, which `pipe` may hand out,
+    /// closed on exec.
     fn high(fd: i32) -> Option<i32> {
         let moved = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10) };
         unsafe { libc::close(fd) };
@@ -22,10 +23,10 @@ pub(crate) fn reserve_pipe() {
     let mut to_chrome = [0; 2];
     let mut from_chrome = [0; 2];
     unsafe {
-        if libc::pipe2(to_chrome.as_mut_ptr(), libc::O_CLOEXEC) != 0 {
+        if libc::pipe(to_chrome.as_mut_ptr()) != 0 {
             return;
         }
-        if libc::pipe2(from_chrome.as_mut_ptr(), libc::O_CLOEXEC) != 0 {
+        if libc::pipe(from_chrome.as_mut_ptr()) != 0 {
             libc::close(to_chrome[0]);
             libc::close(to_chrome[1]);
             return;
@@ -36,7 +37,13 @@ pub(crate) fn reserve_pipe() {
             high(from_chrome[0]),
             high(from_chrome[1]),
         ];
-        let [Some(chrome_reads), Some(we_write), Some(we_read), Some(chrome_writes)] = fds else {
+        let [
+            Some(chrome_reads),
+            Some(we_write),
+            Some(we_read),
+            Some(chrome_writes),
+        ] = fds
+        else {
             for fd in fds.into_iter().flatten() {
                 libc::close(fd);
             }

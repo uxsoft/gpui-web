@@ -83,7 +83,11 @@ pub fn handle_subprocess(devtools_pipe: bool) -> Option<i32> {
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let args = Args::new();
     let mut app = crate::browser::app();
-    let code = execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut());
+    let code = execute_process(
+        Some(args.as_main_args()),
+        Some(&mut app),
+        std::ptr::null_mut(),
+    );
     if code >= 0 {
         return Some(code);
     }
@@ -295,7 +299,11 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
             .as_deref()
             .map(CefString::from)
             .unwrap_or_default(),
-        log_file: options.log_file.as_deref().map(path_string).unwrap_or_default(),
+        log_file: options
+            .log_file
+            .as_deref()
+            .map(path_string)
+            .unwrap_or_default(),
         log_severity: match options.log_level {
             LogLevel::Verbose => LogSeverity::VERBOSE,
             LogLevel::Info => LogSeverity::INFO,
@@ -314,7 +322,13 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     crate::platform::macos::install_app_protocol();
-    if initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut()) != 1 {
+    if initialize(
+        Some(args.as_main_args()),
+        Some(&settings),
+        Some(&mut app),
+        std::ptr::null_mut(),
+    ) != 1
+    {
         return Err("Chromium failed to start (CefInitialize)".into());
     }
     tracing::info!("CEF started ({mode:?})");

@@ -5,15 +5,13 @@ use std::path::PathBuf;
 
 use cef::*;
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke,
-    Modifiers, MouseButton, ParentElement as _, Pixels, Render, Styled as _, Task,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent,
+    Keystroke, Modifiers, MouseButton, ParentElement as _, Pixels, Render, Styled as _, Task,
     UTF16Selection, Window, div, px,
 };
 
-use crate::browser::{
-    self, ContextMenu, Disposition, FileChooser, JsDialog, PageEvent, PageRef,
-};
+use crate::browser::{self, ContextMenu, Disposition, FileChooser, JsDialog, PageEvent, PageRef};
 use crate::element::WebViewElement;
 use crate::runtime::Profile;
 
@@ -38,8 +36,15 @@ pub enum WebViewEvent {
     FileChooser(FileChooser),
     /// The page wants a context menu at a point; the web view shows none.
     ContextMenu(ContextMenu),
-    DownloadStarted { name: String, path: PathBuf },
-    DownloadFinished { name: String, path: PathBuf, ok: bool },
+    DownloadStarted {
+        name: String,
+        path: PathBuf,
+    },
+    DownloadFinished {
+        name: String,
+        path: PathBuf,
+        ok: bool,
+    },
     /// The page's renderer died; [`WebView::reload`] brings it back.
     Crashed,
     /// The page has its DevTools target id ([`WebView::target_id`]).
@@ -135,15 +140,27 @@ impl WebView {
                 PageEvent::Url => WebViewEvent::UrlChanged,
                 PageEvent::Loading => WebViewEvent::LoadingChanged,
                 PageEvent::Favicon => WebViewEvent::FaviconChanged,
-                PageEvent::Popup { page, url, disposition, user_gesture } => {
+                PageEvent::Popup {
+                    page,
+                    url,
+                    disposition,
+                    user_gesture,
+                } => {
                     let popup = cx.new(|cx| WebView::adopt(page, cx));
-                    WebViewEvent::NewWindow { popup, url, disposition, user_gesture }
+                    WebViewEvent::NewWindow {
+                        popup,
+                        url,
+                        disposition,
+                        user_gesture,
+                    }
                 }
                 PageEvent::JsDialog(dialog) => WebViewEvent::JsDialog(dialog),
                 PageEvent::JsDialogClosed => WebViewEvent::JsDialogClosed,
                 PageEvent::FileChooser(chooser) => WebViewEvent::FileChooser(chooser),
                 PageEvent::ContextMenu(menu) => WebViewEvent::ContextMenu(menu),
-                PageEvent::DownloadStarted { name, path } => WebViewEvent::DownloadStarted { name, path },
+                PageEvent::DownloadStarted { name, path } => {
+                    WebViewEvent::DownloadStarted { name, path }
+                }
                 PageEvent::DownloadFinished { name, path, ok } => {
                     WebViewEvent::DownloadFinished { name, path, ok }
                 }
@@ -310,14 +327,20 @@ impl WebView {
     }
 
     /// Calls a DevTools method on the page; resolves to the JSON result.
-    pub fn devtools_call(&self, method: &str, params: serde_json::Value, cx: &App) -> Task<Result<serde_json::Value, String>> {
+    pub fn devtools_call(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        cx: &App,
+    ) -> Task<Result<serde_json::Value, String>> {
         let (tx, rx) = futures::channel::oneshot::channel();
         let sent = {
             let mut page = self.page.borrow_mut();
             let id = page.next_devtools_id;
             page.next_devtools_id += 1;
             page.devtools_calls.push((id, tx));
-            let message = serde_json::json!({ "id": id, "method": method, "params": params }).to_string();
+            let message =
+                serde_json::json!({ "id": id, "method": method, "params": params }).to_string();
             page.host().map(|host| (host, message))
         };
         let Some((host, message)) = sent else {
@@ -384,7 +407,9 @@ impl WebView {
     }
 
     pub(crate) fn send_key(&self, keystroke: &Keystroke, down: bool, held: bool) {
-        let Some(event) = crate::input::key_down_up(keystroke, down, held) else { return };
+        let Some(event) = crate::input::key_down_up(keystroke, down, held) else {
+            return;
+        };
         if let Some(host) = self.host() {
             host.send_key_event(Some(&event));
         }
@@ -424,7 +449,11 @@ impl Render for WebView {
                 this.modifiers = event.keystroke.modifiers;
                 this.send_key(&event.keystroke, false, false);
             }))
-            .child(WebViewElement::new(cx.entity(), self.page.clone(), self.focus.clone()))
+            .child(WebViewElement::new(
+                cx.entity(),
+                self.page.clone(),
+                self.focus.clone(),
+            ))
     }
 }
 
@@ -445,11 +474,24 @@ impl EntityInputHandler for WebView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let end = self.page.borrow().ime.composing.as_ref().map_or(0, |r| r.end);
-        Some(UTF16Selection { range: end..end, reversed: false })
+        let end = self
+            .page
+            .borrow()
+            .ime
+            .composing
+            .as_ref()
+            .map_or(0, |r| r.end);
+        Some(UTF16Selection {
+            range: end..end,
+            reversed: false,
+        })
     }
 
-    fn marked_text_range(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Range<usize>> {
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
         self.page.borrow().ime.composing.clone()
     }
 
@@ -496,7 +538,10 @@ impl EntityInputHandler for WebView {
         }
         self.page.borrow_mut().ime.composing = Some(0..len);
         let underline = CompositionUnderline {
-            range: cef::Range { from: 0, to: len as u32 },
+            range: cef::Range {
+                from: 0,
+                to: len as u32,
+            },
             color: 0xff00_0000,
             background_color: 0,
             thick: 0,
@@ -507,7 +552,12 @@ impl EntityInputHandler for WebView {
             from: selection.start as u32,
             to: selection.end as u32,
         };
-        host.ime_set_composition(Some(&new_text.into()), Some(&[underline]), None, Some(&selection));
+        host.ime_set_composition(
+            Some(&new_text.into()),
+            Some(&[underline]),
+            None,
+            Some(&selection),
+        );
     }
 
     fn bounds_for_range(
@@ -523,8 +573,10 @@ impl EntityInputHandler for WebView {
             .get(range_utf16.start)
             .or_else(|| bounds.last())?
             .clone();
-        let (x, y) = page.geometry.from_view(rect.x, rect.y);
-        let (right, bottom) = page.geometry.from_view(rect.x + rect.width, rect.y + rect.height);
+        let (x, y) = page.geometry.logical_point(rect.x, rect.y);
+        let (right, bottom) = page
+            .geometry
+            .logical_point(rect.x + rect.width, rect.y + rect.height);
         Some(Bounds::from_corners(
             element_bounds.origin + gpui::point(px(x), px(y)),
             element_bounds.origin + gpui::point(px(right), px(bottom)),

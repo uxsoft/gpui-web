@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use cef::{AcceleratedPaintInfo, Browser, ImplBrowser as _, ImplBrowserHost as _, PaintElementType, Rect};
+use cef::{
+    AcceleratedPaintInfo, Browser, ImplBrowser as _, ImplBrowserHost as _, PaintElementType, Rect,
+};
 use gpui::{App, Window};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use wayland_backend::client::{Backend, ObjectId};
@@ -41,7 +43,9 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_feedback_v1::{self, ZwpLinuxDmabufFeedbackV1},
     zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
 };
-use wayland_protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
+};
 
 use super::{Placement, Presenter};
 
@@ -87,14 +91,19 @@ pub(crate) fn chromium_render_node() -> Option<PathBuf> {
             .ok()?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("renderD")))
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("renderD"))
+            })
             .collect();
         nodes.sort();
         if let Some(main) = &main {
             nodes.retain(|n| n != main);
             nodes.insert(0, main.clone());
         }
-        let node = nodes.into_iter().find(|node| driver_of(node).is_some_and(|d| d != "nvidia"));
+        let node = nodes
+            .into_iter()
+            .find(|node| driver_of(node).is_some_and(|d| d != "nvidia"));
         tracing::info!("web view: Chromium renders on {node:?} (compositor on {main:?})");
         node
     })
@@ -124,7 +133,15 @@ fn render_node_of(dev: u64) -> Option<PathBuf> {
 struct State;
 
 impl Dispatch<WlRegistry, GlobalListContents> for State {
-    fn event(_: &mut Self, _: &WlRegistry, _: <WlRegistry as Proxy>::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: <WlRegistry as Proxy>::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 delegate_noop!(State: ignore WlCompositor);
 delegate_noop!(State: ignore WlSubcompositor);
@@ -137,7 +154,14 @@ delegate_noop!(State: ignore ZwpLinuxDmabufV1);
 delegate_noop!(State: ignore ZwpLinuxBufferParamsV1);
 
 impl Dispatch<WlSurface, Arc<Mutex<Vec<WlOutput>>>> for State {
-    fn event(_: &mut Self, _: &WlSurface, event: wl_surface::Event, outputs: &Arc<Mutex<Vec<WlOutput>>>, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _: &mut Self,
+        _: &WlSurface,
+        event: wl_surface::Event,
+        outputs: &Arc<Mutex<Vec<WlOutput>>>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         let mut outputs = outputs.lock().unwrap_or_else(|e| e.into_inner());
         match event {
             wl_surface::Event::Enter { output } => outputs.push(output),
@@ -148,8 +172,19 @@ impl Dispatch<WlSurface, Arc<Mutex<Vec<WlOutput>>>> for State {
 }
 
 impl Dispatch<WlOutput, Arc<AtomicI32>> for State {
-    fn event(_: &mut Self, _: &WlOutput, event: wl_output::Event, refresh: &Arc<AtomicI32>, _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_output::Event::Mode { flags: WEnum::Value(flags), refresh: mhz, .. } = event
+    fn event(
+        _: &mut Self,
+        _: &WlOutput,
+        event: wl_output::Event,
+        refresh: &Arc<AtomicI32>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Mode {
+            flags: WEnum::Value(flags),
+            refresh: mhz,
+            ..
+        } = event
             && flags.contains(wl_output::Mode::Current)
         {
             refresh.store(mhz, Ordering::Relaxed);
@@ -158,7 +193,14 @@ impl Dispatch<WlOutput, Arc<AtomicI32>> for State {
 }
 
 impl Dispatch<WpFractionalScaleV1, Arc<AtomicU32>> for State {
-    fn event(_: &mut Self, _: &WpFractionalScaleV1, event: wp_fractional_scale_v1::Event, scale: &Arc<AtomicU32>, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _: &mut Self,
+        _: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        scale: &Arc<AtomicU32>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let wp_fractional_scale_v1::Event::PreferredScale { scale: s } = event {
             scale.store(s, Ordering::Relaxed);
         }
@@ -166,7 +208,14 @@ impl Dispatch<WpFractionalScaleV1, Arc<AtomicU32>> for State {
 }
 
 impl Dispatch<WlBuffer, Arc<AtomicBool>> for State {
-    fn event(_: &mut Self, _: &WlBuffer, event: wl_buffer::Event, released: &Arc<AtomicBool>, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _: &mut Self,
+        _: &WlBuffer,
+        event: wl_buffer::Event,
+        released: &Arc<AtomicBool>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let wl_buffer::Event::Release = event {
             released.store(true, Ordering::Release);
         }
@@ -190,7 +239,14 @@ fn dev_t(bytes: &[u8]) -> Option<u64> {
 }
 
 impl Dispatch<ZwpLinuxDmabufFeedbackV1, Arc<Mutex<Feedback>>> for State {
-    fn event(_: &mut Self, _: &ZwpLinuxDmabufFeedbackV1, event: zwp_linux_dmabuf_feedback_v1::Event, feedback: &Arc<Mutex<Feedback>>, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _: &mut Self,
+        _: &ZwpLinuxDmabufFeedbackV1,
+        event: zwp_linux_dmabuf_feedback_v1::Event,
+        feedback: &Arc<Mutex<Feedback>>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         use zwp_linux_dmabuf_feedback_v1::Event as E;
         let mut f = feedback.lock().unwrap_or_else(|e| e.into_inner());
         match event {
@@ -199,8 +255,10 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, Arc<Mutex<Feedback>>> for State {
             E::TrancheTargetDevice { device } => f.tranche_device = dev_t(&device),
             E::TrancheFormats { indices } => {
                 f.tranche_formats = indices
-                    .chunks_exact(2)
-                    .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_ne_bytes(*c))
                     .collect()
             }
             E::TrancheDone => {
@@ -228,13 +286,22 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, Arc<Mutex<Feedback>>> for State {
 
 fn read_format_table(fd: &OwnedFd, size: usize) -> Vec<(u32, u64)> {
     unsafe {
-        let map = libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ, libc::MAP_PRIVATE, fd.as_raw_fd(), 0);
+        let map = libc::mmap(
+            std::ptr::null_mut(),
+            size,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            fd.as_raw_fd(),
+            0,
+        );
         if map == libc::MAP_FAILED {
             return Vec::new();
         }
         let bytes = std::slice::from_raw_parts(map as *const u8, size);
         let table = bytes
-            .chunks_exact(16)
+            .as_chunks::<16>()
+            .0
+            .iter()
             .map(|e| {
                 let format = u32::from_ne_bytes(e[0..4].try_into().unwrap());
                 let modifier = u64::from_ne_bytes(e[8..16].try_into().unwrap());
@@ -272,20 +339,27 @@ fn globals(display: *mut std::ffi::c_void) -> Result<Arc<Globals>> {
 fn connect(display: *mut std::ffi::c_void) -> Result<Globals> {
     let backend = unsafe { Backend::from_foreign_display(display.cast()) };
     let conn = Connection::from_backend(backend);
-    let (globals, mut queue): (_, EventQueue<State>) = registry_queue_init(&conn).context("registry")?;
+    let (globals, mut queue): (_, EventQueue<State>) =
+        registry_queue_init(&conn).context("registry")?;
     let qh = queue.handle();
     let compositor: WlCompositor = globals.bind(&qh, 4..=6, ()).context("wl_compositor")?;
-    let subcompositor: WlSubcompositor = globals.bind(&qh, 1..=1, ()).context("wl_subcompositor")?;
+    let subcompositor: WlSubcompositor =
+        globals.bind(&qh, 1..=1, ()).context("wl_subcompositor")?;
     let viewporter: WpViewporter = globals.bind(&qh, 1..=1, ()).context("wp_viewporter")?;
     let fractional: Option<WpFractionalScaleManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
-    let dmabuf: ZwpLinuxDmabufV1 = globals.bind(&qh, 4..=5, ()).context("zwp_linux_dmabuf_v1 v4")?;
+    let dmabuf: ZwpLinuxDmabufV1 = globals
+        .bind(&qh, 4..=5, ())
+        .context("zwp_linux_dmabuf_v1 v4")?;
     let outputs: Vec<WlOutput> = globals.contents().with_list(|list| {
         list.iter()
             .filter(|g| g.interface == WlOutput::interface().name)
             .map(|g| {
-                globals
-                    .registry()
-                    .bind::<WlOutput, _, State>(g.name, g.version.min(4), &qh, Arc::new(AtomicI32::new(0)))
+                globals.registry().bind::<WlOutput, _, State>(
+                    g.name,
+                    g.version.min(4),
+                    &qh,
+                    Arc::new(AtomicI32::new(0)),
+                )
             })
             .collect()
     });
@@ -301,7 +375,10 @@ fn connect(display: *mut std::ffi::c_void) -> Result<Globals> {
     fb.destroy();
     let (main_device, modifiers) = {
         let f = feedback.lock().unwrap_or_else(|e| e.into_inner());
-        (f.main_device.context("no dma-buf main device")?, f.modifiers.clone())
+        (
+            f.main_device.context("no dma-buf main device")?,
+            f.modifiers.clone(),
+        )
     };
     std::thread::Builder::new()
         .name("gpui-web-wayland".into())
@@ -342,7 +419,9 @@ struct Gbm {
     _lib: libloading::Library,
     create_device: unsafe extern "C" fn(i32) -> *mut gbm_device,
     bo_create: unsafe extern "C" fn(*mut gbm_device, u32, u32, u32, u32) -> *mut gbm_bo,
-    bo_create_with_modifiers: Option<unsafe extern "C" fn(*mut gbm_device, u32, u32, u32, *const u64, u32) -> *mut gbm_bo>,
+    bo_create_with_modifiers: Option<
+        unsafe extern "C" fn(*mut gbm_device, u32, u32, u32, *const u64, u32) -> *mut gbm_bo,
+    >,
     bo_get_fd: unsafe extern "C" fn(*mut gbm_bo) -> i32,
     bo_get_stride: unsafe extern "C" fn(*mut gbm_bo) -> u32,
     bo_get_offset: unsafe extern "C" fn(*mut gbm_bo, i32) -> u32,
@@ -357,13 +436,17 @@ impl Gbm {
             let lib = libloading::Library::new("libgbm.so.1").context("loading libgbm.so.1")?;
             macro_rules! sym {
                 ($name:literal) => {
-                    *lib.get($name).context(concat!("libgbm: ", stringify!($name)))?
+                    *lib.get($name)
+                        .context(concat!("libgbm: ", stringify!($name)))?
                 };
             }
             Ok(Self {
                 create_device: sym!(b"gbm_create_device\0"),
                 bo_create: sym!(b"gbm_bo_create\0"),
-                bo_create_with_modifiers: lib.get(b"gbm_bo_create_with_modifiers\0").ok().map(|s| *s),
+                bo_create_with_modifiers: lib
+                    .get(b"gbm_bo_create_with_modifiers\0")
+                    .ok()
+                    .map(|s| *s),
                 bo_get_fd: sym!(b"gbm_bo_get_fd\0"),
                 bo_get_stride: sym!(b"gbm_bo_get_stride\0"),
                 bo_get_offset: sym!(b"gbm_bo_get_offset\0"),
@@ -475,7 +558,10 @@ fn program(gl: &glow::Context, fragment: &str, target: u32) -> Result<Program> {
     use glow::HasContext as _;
     unsafe {
         let program = gl.create_program().map_err(|e| anyhow!(e))?;
-        for (kind, source) in [(glow::VERTEX_SHADER, VERTEX), (glow::FRAGMENT_SHADER, fragment)] {
+        for (kind, source) in [
+            (glow::VERTEX_SHADER, VERTEX),
+            (glow::FRAGMENT_SHADER, fragment),
+        ] {
             let shader = gl.create_shader(kind).map_err(|e| anyhow!(e))?;
             gl.shader_source(shader, source);
             gl.compile_shader(shader);
@@ -489,15 +575,24 @@ fn program(gl: &glow::Context, fragment: &str, target: u32) -> Result<Program> {
         if !gl.get_program_link_status(program) {
             bail!("program: {}", gl.get_program_info_log(program));
         }
-        let uniform = |name| gl.get_uniform_location(program, name).with_context(|| format!("uniform {name}"));
-        Ok(Program { program, src: uniform("u_src")?, size: uniform("u_size")?, target })
+        let uniform = |name| {
+            gl.get_uniform_location(program, name)
+                .with_context(|| format!("uniform {name}"))
+        };
+        Ok(Program {
+            program,
+            src: uniform("u_src")?,
+            size: uniform("u_size")?,
+            target,
+        })
     }
 }
 
 impl Blitter {
     fn new(main_device: u64) -> Result<Self> {
         use glow::HasContext as _;
-        let node = render_node_of(main_device).context("no render node for the compositor's GPU")?;
+        let node =
+            render_node_of(main_device).context("no render node for the compositor's GPU")?;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -510,33 +605,57 @@ impl Blitter {
         }
         let egl = unsafe { khronos_egl::DynamicInstance::<khronos_egl::EGL1_5>::load_required() }
             .map_err(|e| anyhow!("loading libEGL: {e}"))?;
-        let display = unsafe { egl.get_platform_display(EGL_PLATFORM_GBM_KHR, device, &[khronos_egl::ATTRIB_NONE]) }
-            .context("eglGetPlatformDisplay(GBM)")?;
+        let display = unsafe {
+            egl.get_platform_display(EGL_PLATFORM_GBM_KHR, device, &[khronos_egl::ATTRIB_NONE])
+        }
+        .context("eglGetPlatformDisplay(GBM)")?;
         egl.initialize(display).context("eglInitialize")?;
-        egl.bind_api(khronos_egl::OPENGL_ES_API).context("eglBindAPI")?;
+        egl.bind_api(khronos_egl::OPENGL_ES_API)
+            .context("eglBindAPI")?;
         let config = egl
-            .choose_first_config(display, &[khronos_egl::RENDERABLE_TYPE, khronos_egl::OPENGL_ES3_BIT, khronos_egl::NONE])
+            .choose_first_config(
+                display,
+                &[
+                    khronos_egl::RENDERABLE_TYPE,
+                    khronos_egl::OPENGL_ES3_BIT,
+                    khronos_egl::NONE,
+                ],
+            )
             .context("eglChooseConfig")?
             .context("no GLES3 config")?;
         let context = egl
-            .create_context(display, config, None, &[khronos_egl::CONTEXT_MAJOR_VERSION, 3, khronos_egl::NONE])
+            .create_context(
+                display,
+                config,
+                None,
+                &[khronos_egl::CONTEXT_MAJOR_VERSION, 3, khronos_egl::NONE],
+            )
             .context("eglCreateContext")?;
-        egl.make_current(display, None, None, Some(context)).context("eglMakeCurrent")?;
-        let proc = |name: &str| egl.get_proc_address(name).map(|f| f as *const std::ffi::c_void);
-        let gl = unsafe { glow::Context::from_loader_function(|name| proc(name).unwrap_or(std::ptr::null())) };
+        egl.make_current(display, None, None, Some(context))
+            .context("eglMakeCurrent")?;
+        let proc = |name: &str| {
+            egl.get_proc_address(name)
+                .map(|f| f as *const std::ffi::c_void)
+        };
+        let gl = unsafe {
+            glow::Context::from_loader_function(|name| proc(name).unwrap_or(std::ptr::null()))
+        };
         let image_target_texture: ImageTargetFn = unsafe {
-            std::mem::transmute(proc("glEGLImageTargetTexture2DOES").context("glEGLImageTargetTexture2DOES")?)
+            std::mem::transmute(
+                proc("glEGLImageTargetTexture2DOES").context("glEGLImageTargetTexture2DOES")?,
+            )
         };
         let image_target_renderbuffer: ImageTargetFn = unsafe {
-            std::mem::transmute(proc("glEGLImageTargetRenderbufferStorageOES").context("glEGLImageTargetRenderbufferStorageOES")?)
+            std::mem::transmute(
+                proc("glEGLImageTargetRenderbufferStorageOES")
+                    .context("glEGLImageTargetRenderbufferStorageOES")?,
+            )
         };
         let external = program(&gl, FRAGMENT_EXTERNAL, TEXTURE_EXTERNAL_OES)?;
         let plain = program(&gl, FRAGMENT_PLAIN, glow::TEXTURE_2D)?;
-        tracing::info!(
-            "web view: blitting on {} ({})",
-            node.display(),
-            unsafe { gl.get_parameter_string(glow::RENDERER) }
-        );
+        tracing::info!("web view: blitting on {} ({})", node.display(), unsafe {
+            gl.get_parameter_string(glow::RENDERER)
+        });
         egl.make_current(display, None, None, None).ok();
         Ok(Self {
             egl,
@@ -556,33 +675,57 @@ impl Blitter {
     }
 
     fn current(&self) -> bool {
-        self.egl.make_current(self.display, None, None, Some(self.context)).is_ok()
+        self.egl
+            .make_current(self.display, None, None, Some(self.context))
+            .is_ok()
     }
 
     fn release(&self) {
         self.egl.make_current(self.display, None, None, None).ok();
     }
 
-    fn dmabuf_image(&self, fd: i32, fourcc: u32, size: (i32, i32), offset: u32, stride: u32, modifier: u64) -> Result<khronos_egl::Image> {
+    fn dmabuf_image(
+        &self,
+        fd: i32,
+        fourcc: u32,
+        size: (i32, i32),
+        offset: u32,
+        stride: u32,
+        modifier: u64,
+    ) -> Result<khronos_egl::Image> {
         let mut attribs = vec![
-            khronos_egl::WIDTH as usize, size.0 as usize,
-            khronos_egl::HEIGHT as usize, size.1 as usize,
-            EGL_LINUX_DRM_FOURCC_EXT, fourcc as usize,
-            EGL_DMA_BUF_PLANE0_FD_EXT, fd as usize,
-            EGL_DMA_BUF_PLANE0_OFFSET_EXT, offset as usize,
-            EGL_DMA_BUF_PLANE0_PITCH_EXT, stride as usize,
+            khronos_egl::WIDTH as usize,
+            size.0 as usize,
+            khronos_egl::HEIGHT as usize,
+            size.1 as usize,
+            EGL_LINUX_DRM_FOURCC_EXT,
+            fourcc as usize,
+            EGL_DMA_BUF_PLANE0_FD_EXT,
+            fd as usize,
+            EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+            offset as usize,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT,
+            stride as usize,
         ];
         if modifier != DRM_FORMAT_MOD_INVALID {
             attribs.extend([
-                EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (modifier & 0xffff_ffff) as usize,
-                EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (modifier >> 32) as usize,
+                EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
+                (modifier & 0xffff_ffff) as usize,
+                EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
+                (modifier >> 32) as usize,
             ]);
         }
         attribs.push(khronos_egl::ATTRIB_NONE);
         let no_context = unsafe { khronos_egl::Context::from_ptr(khronos_egl::NO_CONTEXT) };
         let no_buffer = unsafe { khronos_egl::ClientBuffer::from_ptr(std::ptr::null_mut()) };
         self.egl
-            .create_image(self.display, no_context, EGL_LINUX_DMA_BUF_EXT, no_buffer, &attribs)
+            .create_image(
+                self.display,
+                no_context,
+                EGL_LINUX_DMA_BUF_EXT,
+                no_buffer,
+                &attribs,
+            )
             .context("eglCreateImage(dma-buf)")
     }
 
@@ -590,7 +733,8 @@ impl Blitter {
         use glow::HasContext as _;
         unsafe {
             let framebuffer = self.gl.create_framebuffer().map_err(|e| anyhow!(e))?;
-            self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+            self.gl
+                .bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
             attach(&self.gl);
             let status = self.gl.check_framebuffer_status(glow::FRAMEBUFFER);
             if status != glow::FRAMEBUFFER_COMPLETE {
@@ -609,10 +753,21 @@ impl Blitter {
             self.gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
             (self.image_target_renderbuffer)(glow::RENDERBUFFER, image.as_ptr());
             let framebuffer = self.framebuffer(|gl| {
-                gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::RENDERBUFFER, Some(rb))
+                gl.framebuffer_renderbuffer(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::RENDERBUFFER,
+                    Some(rb),
+                )
             });
             match framebuffer {
-                Ok(framebuffer) => Ok(Target { image: Some(image), renderbuffer: Some(rb), texture: None, framebuffer, size }),
+                Ok(framebuffer) => Ok(Target {
+                    image: Some(image),
+                    renderbuffer: Some(rb),
+                    texture: None,
+                    framebuffer,
+                    size,
+                }),
                 Err(err) => {
                     self.gl.delete_renderbuffer(rb);
                     self.egl.destroy_image(self.display, image).ok();
@@ -628,13 +783,26 @@ impl Blitter {
         unsafe {
             let texture = self.gl.create_texture().map_err(|e| anyhow!(e))?;
             self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-            self.gl.tex_storage_2d(glow::TEXTURE_2D, 1, glow::RGBA8, size.0, size.1);
+            self.gl
+                .tex_storage_2d(glow::TEXTURE_2D, 1, glow::RGBA8, size.0, size.1);
             set_nearest(&self.gl, glow::TEXTURE_2D);
             let framebuffer = self.framebuffer(|gl| {
-                gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(texture), 0)
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(texture),
+                    0,
+                )
             });
             match framebuffer {
-                Ok(framebuffer) => Ok(Target { image: None, renderbuffer: None, texture: Some(texture), framebuffer, size }),
+                Ok(framebuffer) => Ok(Target {
+                    image: None,
+                    renderbuffer: None,
+                    texture: Some(texture),
+                    framebuffer,
+                    size,
+                }),
                 Err(err) => {
                     self.gl.delete_texture(texture);
                     Err(err)
@@ -699,7 +867,14 @@ impl Blitter {
             C::CEF_COLOR_TYPE_RGBA_8888 => DRM_FORMAT_ABGR8888,
             _ => DRM_FORMAT_ARGB8888,
         };
-        let image = self.dmabuf_image(plane.fd, fourcc, size, plane.offset as u32, plane.stride as u32, info.modifier)?;
+        let image = self.dmabuf_image(
+            plane.fd,
+            fourcc,
+            size,
+            plane.offset as u32,
+            plane.stride,
+            info.modifier,
+        )?;
         let texture = unsafe {
             let texture = self.gl.create_texture().map_err(|e| anyhow!(e))?;
             self.gl.bind_texture(TEXTURE_EXTERNAL_OES, Some(texture));
@@ -707,7 +882,14 @@ impl Blitter {
             set_nearest(&self.gl, TEXTURE_EXTERNAL_OES);
             texture
         };
-        self.sources.insert(inode, Source { image, texture, size });
+        self.sources.insert(
+            inode,
+            Source {
+                image,
+                texture,
+                size,
+            },
+        );
         Ok((texture, size))
     }
 
@@ -725,7 +907,17 @@ impl Blitter {
                     }
                     let texture = gl.create_texture().map_err(|e| anyhow!(e))?;
                     gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                    gl.tex_image_2d(glow::TEXTURE_2D, 0, BGRA as i32, size.0, size.1, 0, BGRA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None));
+                    gl.tex_image_2d(
+                        glow::TEXTURE_2D,
+                        0,
+                        BGRA as i32,
+                        size.0,
+                        size.1,
+                        0,
+                        BGRA,
+                        glow::UNSIGNED_BYTE,
+                        glow::PixelUnpackData::Slice(None),
+                    );
                     set_nearest(gl, glow::TEXTURE_2D);
                     self.upload = Some((texture, size));
                     texture
@@ -733,14 +925,32 @@ impl Blitter {
             };
             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
-            gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, size.0, size.1, BGRA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(pixels)));
+            gl.tex_sub_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                0,
+                0,
+                size.0,
+                size.1,
+                BGRA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(pixels)),
+            );
             Ok(texture)
         }
     }
 
     /// Draws texels `src` (x, y, w, h) of `texture` (of `size`) into area
     /// `dst` of `target`, one texel per pixel.
-    fn draw(&self, program: &Program, texture: glow::NativeTexture, size: (i32, i32), src: (i32, i32, i32, i32), target: &Target, dst: (i32, i32)) {
+    fn draw(
+        &self,
+        program: &Program,
+        texture: glow::NativeTexture,
+        size: (i32, i32),
+        src: (i32, i32, i32, i32),
+        target: &Target,
+        dst: (i32, i32),
+    ) {
         use glow::HasContext as _;
         let gl = &self.gl;
         unsafe {
@@ -751,7 +961,13 @@ impl Blitter {
             gl.use_program(Some(program.program));
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(program.target, Some(texture));
-            gl.uniform_4_f32(Some(&program.src), src.0 as f32, src.1 as f32, src.2 as f32, src.3 as f32);
+            gl.uniform_4_f32(
+                Some(&program.src),
+                src.0 as f32,
+                src.1 as f32,
+                src.2 as f32,
+                src.3 as f32,
+            );
             gl.uniform_2_f32(Some(&program.size), size.0 as f32, size.1 as f32);
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
         }
@@ -799,10 +1015,27 @@ impl PoolBuffer {
             .collect();
         let mut bo = std::ptr::null_mut();
         if let (Some(create), false) = (gbm.bo_create_with_modifiers, modifiers.is_empty()) {
-            bo = unsafe { create(blitter.device, w, h, DRM_FORMAT_XRGB8888, modifiers.as_ptr(), modifiers.len() as u32) };
+            bo = unsafe {
+                create(
+                    blitter.device,
+                    w,
+                    h,
+                    DRM_FORMAT_XRGB8888,
+                    modifiers.as_ptr(),
+                    modifiers.len() as u32,
+                )
+            };
         }
         if bo.is_null() {
-            bo = unsafe { (gbm.bo_create)(blitter.device, w, h, DRM_FORMAT_XRGB8888, GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR) };
+            bo = unsafe {
+                (gbm.bo_create)(
+                    blitter.device,
+                    w,
+                    h,
+                    DRM_FORMAT_XRGB8888,
+                    GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR,
+                )
+            };
         }
         if bo.is_null() {
             bail!("gbm_bo_create {w}x{h} failed");
@@ -822,14 +1055,32 @@ impl PoolBuffer {
         }
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
         let (stride, offset, modifier) = unsafe {
-            ((gbm.bo_get_stride)(bo), (gbm.bo_get_offset)(bo, 0), (gbm.bo_get_modifier)(bo))
+            (
+                (gbm.bo_get_stride)(bo),
+                (gbm.bo_get_offset)(bo, 0),
+                (gbm.bo_get_modifier)(bo),
+            )
         };
         let image = blitter
-            .dmabuf_image(fd.as_raw_fd(), DRM_FORMAT_XRGB8888, size, offset, stride, modifier)
+            .dmabuf_image(
+                fd.as_raw_fd(),
+                DRM_FORMAT_XRGB8888,
+                size,
+                offset,
+                stride,
+                modifier,
+            )
             .map_err(fail)?;
         let target = blitter.dmabuf_target(image, size).map_err(fail)?;
         let params = globals.dmabuf.create_params(&globals.qh, ());
-        params.add(fd.as_fd(), 0, offset, stride, (modifier >> 32) as u32, (modifier & 0xffff_ffff) as u32);
+        params.add(
+            fd.as_fd(),
+            0,
+            offset,
+            stride,
+            (modifier >> 32) as u32,
+            (modifier & 0xffff_ffff) as u32,
+        );
         let released = Arc::new(AtomicBool::new(true));
         let buffer = params.create_immed(
             size.0,
@@ -840,7 +1091,12 @@ impl PoolBuffer {
             released.clone(),
         );
         params.destroy();
-        Ok(Self { bo, target, buffer, released })
+        Ok(Self {
+            bo,
+            target,
+            buffer,
+            released,
+        })
     }
 
     fn free(self, blitter: &Blitter) {
@@ -896,11 +1152,14 @@ impl WaylandPresenter {
         let blitter = blitter(globals.main_device)?;
         let parent_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), parent.cast()) }
             .map_err(|e| anyhow!("GPUI's surface: {e:?}"))?;
-        let parent = WlSurface::from_id(&globals.conn, parent_id).map_err(|e| anyhow!("GPUI's surface: {e:?}"))?;
+        let parent = WlSurface::from_id(&globals.conn, parent_id)
+            .map_err(|e| anyhow!("GPUI's surface: {e:?}"))?;
         let qh = &globals.qh;
         let outputs = Arc::new(Mutex::new(Vec::new()));
         let surface = globals.compositor.create_surface(qh, outputs.clone());
-        let subsurface = globals.subcompositor.get_subsurface(&surface, &parent, qh, ());
+        let subsurface = globals
+            .subcompositor
+            .get_subsurface(&surface, &parent, qh, ());
         subsurface.place_below(&parent);
         subsurface.set_desync();
         // Input goes to GPUI, whose surface covers ours.
@@ -1008,14 +1267,33 @@ impl WaylandPresenter {
                 Frame::Cpu(pixels) => (false, blitter.upload(pixels, size)?, size),
             };
             let blitter = &*blitter;
-            let program = if program { &blitter.external } else { &blitter.plain };
+            let program = if program {
+                &blitter.external
+            } else {
+                &blitter.plain
+            };
             let target = &self.pool[ix].target;
-            blitter.draw(program, texture, frame_size, (0, 0, size.0, size.1), target, (0, 0));
-            if let (true, Some(popup), Some(rect)) = (self.popup_shown, &self.popup, &self.popup_rect)
+            blitter.draw(
+                program,
+                texture,
+                frame_size,
+                (0, 0, size.0, size.1),
+                target,
+                (0, 0),
+            );
+            if let (true, Some(popup), Some(rect)) =
+                (self.popup_shown, &self.popup, &self.popup_rect)
                 && let Some(popup_texture) = popup.texture
             {
                 let (w, h) = popup.size;
-                blitter.draw(&blitter.plain, popup_texture, popup.size, (0, 0, w, h), target, (rect.x, rect.y));
+                blitter.draw(
+                    &blitter.plain,
+                    popup_texture,
+                    popup.size,
+                    (0, 0, w, h),
+                    target,
+                    (rect.x, rect.y),
+                );
             }
             blitter.finish();
             Ok::<_, anyhow::Error>(ix)
@@ -1068,12 +1346,31 @@ impl WaylandPresenter {
                 }
                 self.popup = Some(blitter.texture_target(size)?);
             }
-            let texture = self.popup.as_ref().and_then(|p| p.texture).context("popup")?;
+            let texture = self
+                .popup
+                .as_ref()
+                .and_then(|p| p.texture)
+                .context("popup")?;
             unsafe {
                 // The popup's texture is RGBA; swap in the upload instead.
                 blitter.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                let rgba: Vec<u8> = pixels.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
-                blitter.gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, size.0, size.1, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(&rgba)));
+                let rgba: Vec<u8> = pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|p| [p[2], p[1], p[0], p[3]])
+                    .collect();
+                blitter.gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    size.0,
+                    size.1,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(&rgba)),
+                );
             }
             Ok(())
         })();
@@ -1097,7 +1394,14 @@ impl WaylandPresenter {
             }
             let (texture, frame) = blitter.source(info)?;
             let target = self.popup.as_ref().context("popup")?;
-            blitter.draw(&blitter.external, texture, frame, (0, 0, size.0, size.1), target, (0, 0));
+            blitter.draw(
+                &blitter.external,
+                texture,
+                frame,
+                (0, 0, size.0, size.1),
+                target,
+                (0, 0),
+            );
             Ok(())
         })();
         blitter.release();
@@ -1154,7 +1458,9 @@ impl Presenter for WaylandPresenter {
                 f32::from(visible.size.height) as f64 * k,
             )
         });
-        let moved = self.position != Some(position) || self.destination != Some(destination) || self.source != source;
+        let moved = self.position != Some(position)
+            || self.destination != Some(destination)
+            || self.source != source;
         let mut commit = false;
         if moved {
             // Move in step with GPUI's frame: the position applies on GPUI's
@@ -1201,7 +1507,11 @@ impl Presenter for WaylandPresenter {
         self.globals.conn.flush().ok();
     }
 
-    fn on_accelerated_paint(&mut self, kind: PaintElementType, info: &AcceleratedPaintInfo) -> bool {
+    fn on_accelerated_paint(
+        &mut self,
+        kind: PaintElementType,
+        info: &AcceleratedPaintInfo,
+    ) -> bool {
         if kind == PaintElementType::POPUP {
             if let Err(err) = self.copy_popup(info) {
                 tracing::warn!("web view: popup frame: {err:#}");
@@ -1222,7 +1532,14 @@ impl Presenter for WaylandPresenter {
         }
     }
 
-    fn on_paint(&mut self, kind: PaintElementType, _dirty: &[Rect], pixels: &[u8], width: i32, height: i32) -> bool {
+    fn on_paint(
+        &mut self,
+        kind: PaintElementType,
+        _dirty: &[Rect],
+        pixels: &[u8],
+        width: i32,
+        height: i32,
+    ) -> bool {
         if kind == PaintElementType::POPUP {
             if let Err(err) = self.upload_popup(pixels, (width, height)) {
                 tracing::warn!("web view: popup frame: {err:#}");

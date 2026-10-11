@@ -39,7 +39,8 @@ impl Frame {
         self.pixels.extend_from_slice(pixels);
     }
 
-    /// Takes `rows` rows of `row_bytes` from a buffer laid out with `stride`.
+    /// Takes the rows of a buffer laid out with `stride`.
+    #[cfg(target_os = "linux")]
     fn set_strided(&mut self, data: &[u8], stride: usize, width: i32, height: i32) {
         let row = width as usize * 4;
         self.width = width;
@@ -111,14 +112,28 @@ impl Presenter for CpuPresenter {
         }
         if let Some(image) = &self.image {
             window
-                .paint_image(place.bounds, place.bounds, Corners::default(), image.clone(), 0, false)
+                .paint_image(
+                    place.bounds,
+                    place.bounds,
+                    Corners::default(),
+                    image.clone(),
+                    0,
+                    false,
+                )
                 .ok();
         }
     }
 
     fn hide(&mut self) {}
 
-    fn on_paint(&mut self, kind: PaintElementType, _dirty: &[Rect], pixels: &[u8], width: i32, height: i32) -> bool {
+    fn on_paint(
+        &mut self,
+        kind: PaintElementType,
+        _dirty: &[Rect],
+        pixels: &[u8],
+        width: i32,
+        height: i32,
+    ) -> bool {
         if kind == PaintElementType::POPUP {
             self.popup.set(pixels, width, height);
         } else {
@@ -128,10 +143,18 @@ impl Presenter for CpuPresenter {
         true
     }
 
-    fn on_accelerated_paint(&mut self, kind: PaintElementType, info: &AcceleratedPaintInfo) -> bool {
+    fn on_accelerated_paint(
+        &mut self,
+        kind: PaintElementType,
+        info: &AcceleratedPaintInfo,
+    ) -> bool {
         #[cfg(target_os = "linux")]
         {
-            let frame = if kind == PaintElementType::POPUP { &mut self.popup } else { &mut self.view };
+            let frame = if kind == PaintElementType::POPUP {
+                &mut self.popup
+            } else {
+                &mut self.view
+            };
             if read_dmabuf(info, frame) {
                 self.changed = true;
                 return true;
@@ -177,13 +200,23 @@ fn read_dmabuf(info: &AcceleratedPaintInfo, frame: &mut Frame) -> bool {
     }
     let len = plane.offset as usize + stride * height as usize;
     unsafe {
-        let map = libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, plane.fd, 0);
+        let map = libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            plane.fd,
+            0,
+        );
         if map == libc::MAP_FAILED {
             return false;
         }
         let mut sync = SYNC_READ;
         libc::ioctl(plane.fd, DMA_BUF_IOCTL_SYNC, &mut sync);
-        let data = std::slice::from_raw_parts((map as *const u8).add(plane.offset as usize), stride * height as usize);
+        let data = std::slice::from_raw_parts(
+            (map as *const u8).add(plane.offset as usize),
+            stride * height as usize,
+        );
         frame.set_strided(data, stride, width, height);
         let mut sync = SYNC_READ | SYNC_END;
         libc::ioctl(plane.fd, DMA_BUF_IOCTL_SYNC, &mut sync);
@@ -201,7 +234,12 @@ mod tests {
         let mut p = CpuPresenter::default();
         p.on_paint(PaintElementType::VIEW, &[], &[0; 4 * 4 * 4], 4, 4);
         p.on_popup_show(true);
-        p.on_popup_size(Rect { x: 2, y: 1, width: 4, height: 1 });
+        p.on_popup_size(Rect {
+            x: 2,
+            y: 1,
+            width: 4,
+            height: 1,
+        });
         p.on_paint(PaintElementType::POPUP, &[], &[9; 4 * 4], 4, 1);
         let pixels = p.composed().unwrap();
         let px = |x: usize, y: usize| pixels[(y * 4 + x) * 4];
