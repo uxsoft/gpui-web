@@ -92,7 +92,8 @@ mod unix {
     /// Puts a pipe pair on fds 3 (Chromium reads) and 4 (Chromium writes);
     /// returns our ends.
     fn reserve_pipe() -> (std::fs::File, std::fs::File) {
-        // Moves an fd out of the 3..=4 range (pipe2 may return exactly those).
+        // Moves an fd out of the 3..=4 range (pipe may return exactly those);
+        // the copy is close-on-exec.
         fn high(fd: i32) -> i32 {
             let moved = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10) };
             assert!(moved >= 10);
@@ -102,8 +103,8 @@ mod unix {
         let mut to_chrome = [0; 2];
         let mut from_chrome = [0; 2];
         unsafe {
-            assert_eq!(libc::pipe2(to_chrome.as_mut_ptr(), libc::O_CLOEXEC), 0);
-            assert_eq!(libc::pipe2(from_chrome.as_mut_ptr(), libc::O_CLOEXEC), 0);
+            assert_eq!(libc::pipe(to_chrome.as_mut_ptr()), 0);
+            assert_eq!(libc::pipe(from_chrome.as_mut_ptr()), 0);
             let fds = [
                 high(to_chrome[0]),
                 high(to_chrome[1]),
