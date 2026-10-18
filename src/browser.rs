@@ -18,10 +18,11 @@ use std::sync::Mutex;
 use std::thread::ThreadId;
 
 use cef::*;
-use gpui::{CursorStyle, Point};
+use gpui::CursorStyle;
 
 use crate::platform::Presenter;
 use crate::runtime::{self, Mode, Profile};
+pub(crate) use crate::types::{ContextMenu, DialogKind, Disposition, FileChooser, JsDialog};
 
 /// An `Rc` that CEF may carry to other threads: it may only be used on the
 /// thread that made it, and is leaked rather than freed elsewhere.
@@ -140,60 +141,6 @@ impl Geometry {
         let k = if self.device_rect { self.scale } else { 1. };
         (x as f32 / k, y as f32 / k)
     }
-}
-
-/// A JavaScript dialog the page opened: `alert`, `confirm`, `prompt` or the
-/// "leave this page?" check.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DialogKind {
-    Alert,
-    Confirm,
-    Prompt,
-}
-
-#[derive(Clone, Debug)]
-pub struct JsDialog {
-    pub kind: DialogKind,
-    pub message: String,
-    pub default_text: String,
-}
-
-/// A file input asking for files.
-#[derive(Clone, Debug)]
-pub struct FileChooser {
-    pub multiple: bool,
-    pub folder: bool,
-    pub save: bool,
-    pub default_path: Option<PathBuf>,
-}
-
-/// What was under the pointer when the page asked for a context menu.
-#[derive(Clone, Debug, Default)]
-pub struct ContextMenu {
-    /// Where, in logical pixels relative to the page.
-    pub position: Point<gpui::Pixels>,
-    pub link_url: Option<String>,
-    pub selection_text: String,
-    pub editable: bool,
-    pub can_cut: bool,
-    pub can_copy: bool,
-    pub can_paste: bool,
-    pub can_undo: bool,
-    pub can_redo: bool,
-    pub can_select_all: bool,
-    pub media_url: Option<String>,
-}
-
-/// How a page asked to open another.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Disposition {
-    /// `window.open` with features, or a popup.
-    Popup,
-    /// A link or `window.open` meant for a new tab (Ctrl-click, `target=_blank`).
-    Tab,
-    BackgroundTab,
-    Window,
-    Other,
 }
 
 pub(crate) enum PageEvent {

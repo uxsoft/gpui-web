@@ -11,9 +11,10 @@ use gpui::{
     UTF16Selection, Window, div, px,
 };
 
-use crate::browser::{self, ContextMenu, Disposition, FileChooser, JsDialog, PageEvent, PageRef};
+use crate::browser::{self, PageEvent, PageRef};
 use crate::element::WebViewElement;
 use crate::runtime::Profile;
+use crate::types::WebViewEvent;
 
 /// On Linux the page's own clipboard can't reach the system's (off-screen,
 /// Chromium has no window of its own to hold it), so copy and paste go
@@ -24,44 +25,6 @@ const CLIPBOARD_THROUGH_GPUI: bool = cfg!(target_os = "linux");
 const SELECTION_JS: &str = "(() => { const e = document.activeElement; \
 if (e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA') && typeof e.selectionStart === 'number') \
 return e.value.substring(e.selectionStart, e.selectionEnd); return String(getSelection()); })()";
-
-pub enum WebViewEvent {
-    TitleChanged,
-    UrlChanged,
-    /// Loading started or stopped, or back/forward became (un)available.
-    LoadingChanged,
-    FaviconChanged,
-    /// The page opened another: a popup, or a link meant for a new tab.
-    /// `popup` already shows it; keep it to keep it open.
-    NewWindow {
-        popup: gpui::Entity<WebView>,
-        url: String,
-        disposition: Disposition,
-        user_gesture: bool,
-    },
-    /// Answer with [`WebView::answer_dialog`].
-    JsDialog(JsDialog),
-    JsDialogClosed,
-    /// Answer with [`WebView::choose_files`].
-    FileChooser(FileChooser),
-    /// The page wants a context menu at a point; the web view shows none.
-    ContextMenu(ContextMenu),
-    DownloadStarted {
-        name: String,
-        path: PathBuf,
-    },
-    DownloadFinished {
-        name: String,
-        path: PathBuf,
-        ok: bool,
-    },
-    /// The page's renderer died; [`WebView::reload`] brings it back.
-    Crashed,
-    /// The page has its DevTools target id ([`WebView::target_id`]).
-    Ready,
-    /// The page closed (by itself, through DevTools, or [`WebView::close`]).
-    Closed,
-}
 
 /// A web page. Render it as a child element to show it; pages that aren't
 /// drawn keep running off screen.

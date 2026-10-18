@@ -65,6 +65,7 @@ pub(crate) fn reserve_pipe() {
     RESERVED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[cfg_attr(not(feature = "cef"), allow(dead_code))]
 pub(crate) fn pipe_reserved() -> bool {
     RESERVED.load(std::sync::atomic::Ordering::Relaxed)
 }

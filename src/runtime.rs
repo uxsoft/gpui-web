@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use cef::args::Args;
 use cef::*;
 use futures::FutureExt as _;
+
+use crate::types::{LogLevel, RemoteDebugging, RuntimeOptions};
 use gpui::{App, WindowBackgroundAppearance};
 
 /// How often CEF gets to run while browsers exist, whatever it asked for.
@@ -18,45 +20,6 @@ const SAFETY_TICK: Duration = Duration::from_millis(30);
 /// And while it runs without browsers: CEF doesn't always ask for work
 /// while it creates the first one.
 const IDLE_TICK: Duration = Duration::from_millis(100);
-
-/// How the app's DevTools clients reach the browser.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RemoteDebugging {
-    Off,
-    /// `--remote-debugging-pipe` on fds 3 and 4 (Unix). Needs
-    /// [`handle_subprocess`] to reserve them; see [`take_devtools_pipe`].
-    Pipe,
-    /// `--remote-debugging-port=0` on localhost; see [`devtools_url`].
-    Port,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum LogLevel {
-    Verbose,
-    Info,
-    #[default]
-    Warning,
-    Error,
-    Disabled,
-}
-
-#[derive(Clone, Debug)]
-pub struct RuntimeOptions {
-    /// Where profiles, caches and CEF's own state live. Profile directories
-    /// must be inside it.
-    pub root_cache_dir: PathBuf,
-    /// Where downloads are saved, without asking.
-    pub download_dir: Option<PathBuf>,
-    pub remote_debugging: RemoteDebugging,
-    pub log_level: LogLevel,
-    /// CEF's log; its standard error when `None`.
-    pub log_file: Option<PathBuf>,
-    /// Appended to the user agent, e.g. `Wisp/1.0`.
-    pub user_agent_product: Option<String>,
-    /// The executable CEF runs its subprocesses from, when it isn't this
-    /// one (tests); it must call [`handle_subprocess`] first thing.
-    pub subprocess_path: Option<PathBuf>,
-}
 
 /// How pages are shown, chosen once per process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

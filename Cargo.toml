@@ -1,19 +1,27 @@
 [package]
 name = "gpui_web"
-edition.workspace = true
-version.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
 description = "A Chromium (CEF) web view for GPUI, composited by the OS under the GPUI window"
+repository = "https://github.com/uxsoft/gpui-web"
+readme = "README.md"
+keywords = ["gpui", "cef", "chromium", "webview", "browser"]
+categories = ["gui"]
 
 [features]
+default = ["cef"]
+# The browser engine. Its build downloads CEF (or uses CEF_PATH); without it
+# the crate builds offline and pages report that there is no browser.
+cef = ["dep:cef", "dep:image"]
 # Type-checks without CEF's binaries (cross-platform `cargo check`).
-dox = ["cef/dox"]
+dox = ["cef", "cef/dox"]
 
 [dependencies]
-anyhow.workspace = true
-futures.workspace = true
-serde_json.workspace = true
-tracing.workspace = true
+anyhow = "1"
+futures = "0.3"
+serde_json = "1"
+tracing = "0.1"
 # Pinned: the presenters rely on GPUI behavior that is not API (Wayland
 # surface alpha, the topmost DirectComposition target). Re-run the spikes in
 # examples/ before bumping.
@@ -21,9 +29,9 @@ gpui = { package = "gpui-pre", version = "=0.3.8" }
 raw-window-handle = { version = "0.6", features = ["std"] }
 async-channel = "2"
 # One CEF (Chromium 154) on every platform. No sandbox in v1 (see README).
-cef = { version = "=154.5.0", default-features = false, features = ["build-util"] }
+cef = { version = "=154.5.0", default-features = false, features = ["build-util"], optional = true }
 # GPUI's image types, for the software presenter.
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -56,4 +64,18 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 gpui-kit = "0.7"
-tracing-subscriber.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The examples drive the real browser.
+[[example]]
+name = "browser"
+required-features = ["cef"]
+[[example]]
+name = "bench"
+required-features = ["cef"]
+[[example]]
+name = "spike_cef_devtools"
+required-features = ["cef"]
+[[example]]
+name = "spike_cef_dmabuf"
+required-features = ["cef"]
