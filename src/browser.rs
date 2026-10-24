@@ -1165,9 +1165,34 @@ fn keyboard_handler(page: &PageRef) -> Option<KeyboardHandler> {
     Some(WebKeyboard::new(page.clone()))
 }
 
-#[cfg(not(target_os = "windows"))]
+/// On macOS CEF offers each key a page leaves unhandled to the main menu as
+/// a key equivalent. GPUI already offered the real key to the menu before
+/// the page got it; the second offer fires items nobody asked for (a plain
+/// "e" opened Emoji & Symbols, a "d" started dictation: 🌐E and 🌐D).
+#[cfg(target_os = "macos")]
+fn keyboard_handler(_page: &PageRef) -> Option<KeyboardHandler> {
+    Some(MacKeyboard::new())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn keyboard_handler(_page: &PageRef) -> Option<KeyboardHandler> {
     None
+}
+
+#[cfg(target_os = "macos")]
+wrap_keyboard_handler! {
+    struct MacKeyboard;
+
+    impl KeyboardHandler {
+        fn on_key_event(
+            &self,
+            _browser: Option<&mut Browser>,
+            _event: Option<&KeyEvent>,
+            _os_event: *mut u8,
+        ) -> ::std::os::raw::c_int {
+            1
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]

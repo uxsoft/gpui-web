@@ -373,6 +373,61 @@ fn key_event(kind: Kt, vk: i32, native: i32, modifiers: u32, character: u16) -> 
     }
 }
 
+/// The character the event for `keystroke`'s key (DOM `code`) carries.
+fn key_character(keystroke: &Keystroke, code: &str) -> u16 {
+    let typed = || {
+        keystroke
+            .key_char
+            .as_deref()
+            .and_then(|c| c.encode_utf16().next())
+    };
+    // On macOS CEF rebuilds each key event as an NSEvent, and one without a
+    // character becomes a modifier change, which Chromium reads as a press:
+    // releasing Backspace deleted a second character. Keys that type nothing
+    // get the character AppKit gives them, and Cmd/Ctrl+letter its letter.
+    #[cfg(target_os = "macos")]
+    let character = mac_character(code).or_else(typed).or_else(|| {
+        let key = keystroke.key.as_bytes();
+        (key.len() == 1 && key[0].is_ascii_alphanumeric()).then(|| u16::from(key[0]))
+    });
+    #[cfg(not(target_os = "macos"))]
+    let character = {
+        let _ = code;
+        typed()
+    };
+    character.unwrap_or(0)
+}
+
+/// The character of an AppKit key event for a key that types nothing (or
+/// that macOS types differently, like Enter's carriage return).
+#[cfg(target_os = "macos")]
+fn mac_character(code: &str) -> Option<u16> {
+    if let Some(n) = code.strip_prefix('F').and_then(|n| n.parse::<u16>().ok())
+        && (1..=24).contains(&n)
+    {
+        return Some(0xf704 + n - 1);
+    }
+    Some(match code {
+        "Backspace" => 0x7f,
+        "Enter" => 0x0d,
+        "Tab" => 0x09,
+        "Escape" => 0x1b,
+        "Space" => 0x20,
+        "ArrowUp" => 0xf700,
+        "ArrowDown" => 0xf701,
+        "ArrowLeft" => 0xf702,
+        "ArrowRight" => 0xf703,
+        "Insert" => 0xf727,
+        "Delete" => 0xf728,
+        "Home" => 0xf729,
+        "End" => 0xf72b,
+        "PageUp" => 0xf72c,
+        "PageDown" => 0xf72d,
+        "ContextMenu" => 0xf735,
+        _ => return None,
+    })
+}
+
 /// The CEF event for pressing or releasing `keystroke`'s key. Text comes
 /// separately, through [`char_events`].
 pub(crate) fn key_down_up(keystroke: &Keystroke, down: bool, repeat: bool) -> Option<KeyEvent> {
@@ -381,11 +436,7 @@ pub(crate) fn key_down_up(keystroke: &Keystroke, down: bool, repeat: bool) -> Op
     if repeat {
         modifiers |= bits(Ef::EVENTFLAG_IS_REPEAT);
     }
-    let character = keystroke
-        .key_char
-        .as_deref()
-        .and_then(|c| c.encode_utf16().next())
-        .unwrap_or(0);
+    let character = key_character(keystroke, &code);
     let kind = if down {
         Kt::KEYEVENT_RAWKEYDOWN
     } else {
@@ -541,6 +592,19 @@ mod tests {
         assert_eq!(down.native_key_code, 38);
         let up = key_down_up(&stroke("a"), false, false).unwrap();
         assert_eq!(Kt::from(up.type_), Kt::KEYEVENT_KEYUP);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_key_events_always_carry_a_character() {
+        let character =
+            |s: &str, down: bool| key_down_up(&stroke(s), down, false).unwrap().character;
+        assert_eq!(character("backspace", true), 0x7f);
+        assert_eq!(character("backspace", false), 0x7f);
+        assert_eq!(character("left", false), 0xf702);
+        assert_eq!(character("f5", true), 0xf708);
+        assert_eq!(character("enter", true), 0x0d);
+        assert_eq!(character("cmd-a", true), u16::from(b'a'));
     }
 
     #[test]
