@@ -38,8 +38,17 @@ pub struct RuntimeOptions {
     pub log_level: LogLevel,
     /// CEF's log; its standard error when `None`.
     pub log_file: Option<PathBuf>,
-    /// Appended to the user agent, e.g. `Wisp/1.0`.
+    /// Replaces Chromium's `Chrome/<version>` in the user agent, which sites
+    /// that look for Chrome then miss; `None` keeps the standard one.
     pub user_agent_product: Option<String>,
+    /// Resolves host names through the OS, as other apps do, instead of
+    /// Chromium's own DNS client and DNS-over-HTTPS, which VPN and zero-trust
+    /// clients that route by DNS (Zscaler) never see.
+    pub system_dns: bool,
+    /// Lets public pages reach local and loopback addresses, answering the
+    /// local network access prompt pages can't show. Behind a zero-trust
+    /// client, public services can resolve to such addresses.
+    pub allow_local_network: bool,
     /// The executable CEF runs its subprocesses from, when it isn't this
     /// one (tests); it must call [`handle_subprocess`](crate::handle_subprocess) first thing.
     pub subprocess_path: Option<PathBuf>,

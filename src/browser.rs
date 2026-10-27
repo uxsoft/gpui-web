@@ -15,6 +15,7 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 
 use cef::*;
@@ -331,6 +332,13 @@ pub(crate) fn set_switches(switches: Vec<(String, Option<String>)>) {
     *SWITCHES.lock().unwrap_or_else(|e| e.into_inner()) = switches;
 }
 
+/// See [`crate::RuntimeOptions::allow_local_network`].
+static ALLOW_LOCAL_NETWORK: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn set_allow_local_network(allow: bool) {
+    ALLOW_LOCAL_NETWORK.store(allow, Ordering::Relaxed);
+}
+
 wrap_app! {
     struct WebApp;
 
@@ -439,6 +447,7 @@ fn client(page: &PageRef) -> Client {
         WebJsDialog::new(page.clone()),
         WebDialog::new(page.clone()),
         WebDownload::new(page.clone()),
+        WebPermission::new(),
         keyboard_handler(page),
     )
 }
@@ -459,6 +468,7 @@ mod client {
             js_dialog: JsdialogHandler,
             dialog: DialogHandler,
             download: DownloadHandler,
+            permission: PermissionHandler,
             keyboard: Option<KeyboardHandler>,
         }
 
@@ -489,6 +499,9 @@ mod client {
             }
             fn download_handler(&self) -> Option<DownloadHandler> {
                 Some(self.download.clone())
+            }
+            fn permission_handler(&self) -> Option<PermissionHandler> {
+                Some(self.permission.clone())
             }
             fn keyboard_handler(&self) -> Option<KeyboardHandler> {
                 self.keyboard.clone()
@@ -980,6 +993,35 @@ wrap_context_menu_handler! {
                     media_url: (!media.is_empty()).then_some(media),
                 }));
             });
+        }
+    }
+}
+
+wrap_permission_handler! {
+    struct WebPermission;
+
+    impl PermissionHandler {
+        // Pages can't show Chromium's prompts, which CEF then ignores: a
+        // request waiting for local network access would wait for ever.
+        fn on_show_permission_prompt(
+            &self,
+            _browser: Option<&mut Browser>,
+            _prompt_id: u64,
+            _requesting_origin: Option<&CefString>,
+            requested_permissions: u32,
+            callback: Option<&mut PermissionPromptCallback>,
+        ) -> ::std::os::raw::c_int {
+            use cef::sys::cef_permission_request_types_t as T;
+            let local = T::CEF_PERMISSION_TYPE_LOCAL_NETWORK as u32
+                | T::CEF_PERMISSION_TYPE_LOOPBACK_NETWORK as u32
+                | T::CEF_PERMISSION_TYPE_LOCAL_NETWORK_ACCESS_DEPRECATED as u32;
+            let only_local = requested_permissions != 0 && requested_permissions & !local == 0;
+            let Some(callback) = callback else { return 0 };
+            if !(only_local && ALLOW_LOCAL_NETWORK.load(Ordering::Relaxed)) {
+                return 0;
+            }
+            callback.cont(PermissionRequestResult::ACCEPT);
+            1
         }
     }
 }

@@ -269,7 +269,14 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
             switches.push(("remote-debugging-port".into(), Some("0".into())));
         }
     }
+    if options.system_dns {
+        // Chromium's own DNS client. DNS-over-HTTPS, which Chromium turns on
+        // by itself for well-known resolvers, is a preference read at start.
+        disable_feature(&mut switches, "AsyncDns");
+        turn_off_secure_dns(&options.root_cache_dir.join("Local State"));
+    }
     crate::browser::set_switches(switches);
+    crate::browser::set_allow_local_network(options.allow_local_network);
 
     let args = Args::new();
     let mut app = crate::browser::app();
@@ -322,6 +329,55 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
     }
     tracing::info!("CEF started ({mode:?})");
     Ok(())
+}
+
+/// Adds `feature` to the `disable-features` switch: a second switch would
+/// replace the first.
+fn disable_feature(switches: &mut Vec<(String, Option<String>)>, feature: &str) {
+    match switches
+        .iter_mut()
+        .find(|(name, _)| name == "disable-features")
+    {
+        Some((_, Some(features))) => {
+            features.push(',');
+            features.push_str(feature);
+        }
+        Some((_, value)) => *value = Some(feature.to_string()),
+        None => switches.push(("disable-features".into(), Some(feature.to_string()))),
+    }
+}
+
+/// Sets `dns_over_https.mode` to `off` in Chromium's local state at
+/// `path`, before Chromium reads it.
+fn turn_off_secure_dns(path: &Path) {
+    let mut state = match std::fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(state @ serde_json::Value::Object(_)) => state,
+            // Chromium starts over from a damaged file; so can this.
+            _ => serde_json::json!({}),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => {
+            tracing::warn!("reading {}: {e}", path.display());
+            return;
+        }
+    };
+    if state
+        .pointer("/dns_over_https/mode")
+        .and_then(|m| m.as_str())
+        == Some("off")
+    {
+        return;
+    }
+    match state.get_mut("dns_over_https") {
+        Some(serde_json::Value::Object(doh)) => {
+            doh.insert("mode".into(), "off".into());
+        }
+        _ => state["dns_over_https"] = serde_json::json!({ "mode": "off" }),
+    }
+    if let Err(e) = std::fs::write(path, state.to_string()) {
+        tracing::warn!("writing {}: {e}", path.display());
+    }
 }
 
 /// The languages pages are asked for, from the POSIX locale (e.g.
@@ -437,7 +493,58 @@ impl PartialEq for Profile {
 
 #[cfg(test)]
 mod tests {
-    use super::accept_languages_for;
+    use super::{accept_languages_for, disable_feature, turn_off_secure_dns};
+
+    #[test]
+    fn secure_dns_is_turned_off_in_the_local_state() {
+        let dir = std::env::temp_dir().join(format!("gpui_web_dns_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Local State");
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
+        };
+        turn_off_secure_dns(&path);
+        assert_eq!(
+            read(),
+            serde_json::json!({ "dns_over_https": { "mode": "off" } })
+        );
+        std::fs::write(
+            &path,
+            r#"{"profile":{"x":1},"dns_over_https":{"mode":"automatic","templates":""}}"#,
+        )
+        .unwrap();
+        turn_off_secure_dns(&path);
+        assert_eq!(
+            read(),
+            serde_json::json!({
+                "profile": { "x": 1 },
+                "dns_over_https": { "mode": "off", "templates": "" },
+            })
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn features_join_the_one_disable_switch() {
+        let mut switches = vec![
+            ("no-startup-window".to_string(), None),
+            (
+                "disable-features".to_string(),
+                Some("Translate".to_string()),
+            ),
+        ];
+        disable_feature(&mut switches, "AsyncDns");
+        assert_eq!(
+            switches[1],
+            ("disable-features".into(), Some("Translate,AsyncDns".into()))
+        );
+        let mut switches = Vec::new();
+        disable_feature(&mut switches, "AsyncDns");
+        assert_eq!(
+            switches,
+            vec![("disable-features".into(), Some("AsyncDns".into()))]
+        );
+    }
 
     #[test]
     fn pages_get_the_systems_languages() {

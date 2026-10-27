@@ -238,6 +238,8 @@ fn main() {
                 log_level: Default::default(),
                 log_file: None,
                 user_agent_product: None,
+                system_dns: true,
+                allow_local_network: true,
                 subprocess_path: None,
             },
             cx,
