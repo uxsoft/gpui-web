@@ -219,7 +219,7 @@ impl WebView {
         };
         // Before the browser exists, `on_after_created` sends it.
         if let Some(host) = host {
-            crate::browser::send_automation_override(&host, automated);
+            crate::browser::send_automation_override(&self.page, &host, automated);
         }
     }
 

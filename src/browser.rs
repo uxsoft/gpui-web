@@ -226,6 +226,10 @@ pub(crate) struct Page {
     /// Whether the page says it is automated (`navigator.webdriver`); see
     /// [`crate::WebView::set_automated`].
     pub automated: bool,
+    /// Whether Chromium has taken the last automation override sent: until
+    /// then an automated page's navigation waits, in `deferred_url`.
+    pub automation_acknowledged: bool,
+    pub deferred_url: Option<String>,
 }
 
 impl Page {
@@ -264,6 +268,8 @@ impl Page {
             next_devtools_id: 1000,
             frame_rate: 60,
             automated: false,
+            automation_acknowledged: false,
+            deferred_url: None,
         }
     }
 
@@ -846,7 +852,7 @@ wrap_life_span_handler! {
                 }
                 host.send_dev_tools_message(Some(TARGET_INFO_REQUEST.as_bytes()));
                 if with_page(&self.page, |p| p.automated).unwrap_or_default() {
-                    send_automation_override(&host, true);
+                    send_automation_override(&self.page, &host, true);
                 }
                 let zoom = with_page(&self.page, |p| p.geometry.zoom_level()).unwrap_or(0.);
                 apply_zoom(&host, zoom);
@@ -909,10 +915,14 @@ const TARGET_INFO_ID: i32 = 1;
 const TARGET_INFO_REQUEST: &str = r#"{"id":1,"method":"Target.getTargetInfo"}"#;
 
 /// Sets `navigator.webdriver` for the page's documents, through the page's
-/// own DevTools session, which lasts as long as the page.
-pub(crate) fn send_automation_override(host: &BrowserHost, automated: bool) {
+/// own DevTools session, which lasts as long as the page. Its answer lets
+/// held navigations go: see [`WebRequest`].
+const AUTOMATION_ID: i32 = 2;
+
+pub(crate) fn send_automation_override(page: &PageRef, host: &BrowserHost, automated: bool) {
+    with_page(page, |p| p.automation_acknowledged = false);
     let message = format!(
-        r#"{{"id":2,"method":"Emulation.setAutomationOverride","params":{{"enabled":{automated}}}}}"#
+        r#"{{"id":{AUTOMATION_ID},"method":"Emulation.setAutomationOverride","params":{{"enabled":{automated}}}}}"#
     );
     host.send_dev_tools_message(Some(message.as_bytes()));
     runtime::schedule_pump(0);
@@ -931,6 +941,19 @@ wrap_dev_tools_message_observer! {
             success: ::std::os::raw::c_int,
             result: Option<&[u8]>,
         ) {
+            if message_id == AUTOMATION_ID {
+                let held = with_page(&self.page, |p| {
+                    p.automation_acknowledged = true;
+                    p.deferred_url.take().zip(p.browser.clone())
+                })
+                .flatten();
+                if let Some((url, browser)) = held
+                    && let Some(frame) = browser.main_frame()
+                {
+                    frame.load_url(Some(&url.as_str().into()));
+                }
+                return;
+            }
             let text = String::from_utf8_lossy(result.unwrap_or_default()).into_owned();
             with_page(&self.page, |p| {
                 if message_id == TARGET_INFO_ID {
@@ -961,6 +984,32 @@ wrap_request_handler! {
     }
 
     impl RequestHandler {
+        // An automated page's documents say so from their first script on:
+        // its navigations wait until Chromium has taken the override. One
+        // held this way starts over as a plain GET of its URL.
+        fn on_before_browse(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            _user_gesture: ::std::os::raw::c_int,
+            _is_redirect: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let (Some(frame), Some(request)) = (frame, request) else { return 0 };
+            if frame.is_main() == 0 {
+                return 0;
+            }
+            let url = userfree(&request.url());
+            with_page(&self.page, |p| {
+                if !p.automated || p.automation_acknowledged {
+                    return 0;
+                }
+                p.deferred_url = Some(url);
+                1
+            })
+            .unwrap_or(0)
+        }
+
         fn on_render_process_terminated(
             &self,
             _browser: Option<&mut Browser>,
