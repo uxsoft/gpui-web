@@ -380,17 +380,19 @@ impl WebView {
         })
     }
 
-    /// Evaluates a JavaScript expression in the page and returns its value.
+    /// Evaluates a JavaScript expression in the page and returns its value,
+    /// once settled when it is a promise. A thrown exception is an error.
     pub fn evaluate(&self, expression: &str, cx: &App) -> Task<Result<serde_json::Value, String>> {
         let call = self.devtools_call(
             "Runtime.evaluate",
-            serde_json::json!({ "expression": expression, "returnByValue": true }),
+            serde_json::json!({
+                "expression": expression,
+                "returnByValue": true,
+                "awaitPromise": true,
+            }),
             cx,
         );
-        cx.background_spawn(async move {
-            let result = call.await?;
-            Ok(result.pointer("/result/value").cloned().unwrap_or_default())
-        })
+        cx.background_spawn(async move { evaluation_value(call.await?) })
     }
 
     /// Answers the open JavaScript dialog.
@@ -614,5 +616,50 @@ impl EntityInputHandler for WebView {
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         None
+    }
+}
+
+/// The value of a `Runtime.evaluate` result, or its exception.
+fn evaluation_value(result: serde_json::Value) -> Result<serde_json::Value, String> {
+    if let Some(exception) = result.get("exceptionDetails") {
+        let text = exception
+            .pointer("/exception/description")
+            .or_else(|| exception.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("the expression threw");
+        return Err(text.to_string());
+    }
+    Ok(result.pointer("/result/value").cloned().unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::evaluation_value;
+    use serde_json::json;
+
+    #[test]
+    fn evaluations_give_values_or_exceptions() {
+        let value = |v| evaluation_value(json!({ "result": { "type": "x", "value": v } }));
+        assert_eq!(value(json!(true)), Ok(json!(true)));
+        assert_eq!(value(json!({ "a": [1] })), Ok(json!({ "a": [1] })));
+        // `undefined` has no value.
+        assert_eq!(
+            evaluation_value(json!({ "result": { "type": "undefined" } })),
+            Ok(json!(null))
+        );
+        assert_eq!(
+            evaluation_value(json!({
+                "result": { "type": "object" },
+                "exceptionDetails": {
+                    "text": "Uncaught",
+                    "exception": { "description": "Error: no\n    at <anonymous>:1:7" },
+                },
+            })),
+            Err("Error: no\n    at <anonymous>:1:7".into())
+        );
+        assert_eq!(
+            evaluation_value(json!({ "result": {}, "exceptionDetails": { "text": "Uncaught" } })),
+            Err("Uncaught".into())
+        );
     }
 }
