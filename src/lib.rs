@@ -49,8 +49,8 @@ pub use stub::{
     reserve_devtools_pipe, shutdown, window_background,
 };
 pub use types::{
-    ContextMenu, DialogKind, Disposition, FileChooser, JsDialog, LogLevel, RemoteDebugging,
-    RuntimeOptions, WebViewEvent,
+    ContextMenu, DialogKind, Disposition, FileChooser, JsDialog, LogLevel, MediaKind,
+    RemoteDebugging, RuntimeOptions, WebViewEvent,
 };
 #[cfg(feature = "cef")]
 pub use webview::WebView;

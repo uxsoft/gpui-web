@@ -94,6 +94,20 @@ pub struct ContextMenu {
     pub can_redo: bool,
     pub can_select_all: bool,
     pub media_url: Option<String>,
+    /// What `media_url` is.
+    pub media_kind: MediaKind,
+}
+
+/// The kind of media under the pointer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MediaKind {
+    #[default]
+    None,
+    Image,
+    Video,
+    Audio,
+    /// A plugin, canvas or file.
+    Other,
 }
 
 /// How a page asked to open another.

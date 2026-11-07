@@ -23,7 +23,9 @@ use gpui::CursorStyle;
 
 use crate::platform::Presenter;
 use crate::runtime::{self, Mode, Profile};
-pub(crate) use crate::types::{ContextMenu, DialogKind, Disposition, FileChooser, JsDialog};
+pub(crate) use crate::types::{
+    ContextMenu, DialogKind, Disposition, FileChooser, JsDialog, MediaKind,
+};
 
 /// An `Rc` that CEF may carry to other threads: it may only be used on the
 /// thread that made it, and is leaked rather than freed elsewhere.
@@ -977,6 +979,13 @@ wrap_context_menu_handler! {
             let link = userfree(&params.link_url());
             let media = userfree(&params.source_url());
             let (x, y) = (params.xcoord(), params.ycoord());
+            let media_kind = match params.media_type() {
+                ContextMenuMediaType::NONE => MediaKind::None,
+                ContextMenuMediaType::IMAGE => MediaKind::Image,
+                ContextMenuMediaType::VIDEO => MediaKind::Video,
+                ContextMenuMediaType::AUDIO => MediaKind::Audio,
+                _ => MediaKind::Other,
+            };
             with_page(&self.page, |p| {
                 let (x, y) = p.geometry.logical_point(x, y);
                 p.push(PageEvent::ContextMenu(ContextMenu {
@@ -991,6 +1000,7 @@ wrap_context_menu_handler! {
                     can_redo: has(E::CM_EDITFLAG_CAN_REDO),
                     can_select_all: has(E::CM_EDITFLAG_CAN_SELECT_ALL),
                     media_url: (!media.is_empty()).then_some(media),
+                    media_kind,
                 }));
             });
         }
