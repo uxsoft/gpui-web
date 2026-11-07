@@ -136,6 +136,8 @@ impl WebView {
         false
     }
 
+    pub fn set_automated(&self, _automated: bool) {}
+
     pub fn target_id(&self) -> Option<String> {
         None
     }

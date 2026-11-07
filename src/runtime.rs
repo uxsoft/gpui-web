@@ -269,6 +269,16 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
             switches.push(("remote-debugging-port".into(), Some("0".into())));
         }
     }
+    if options.remote_debugging != RemoteDebugging::Off {
+        // Remote debugging alone makes Chromium tell every page it is
+        // automated (`navigator.webdriver`), and bot checks such as
+        // Cloudflare's then never let a person through. Pages a DevTools
+        // client drives say so themselves: `WebView::set_automated`.
+        switches.push((
+            "disable-blink-features".into(),
+            Some("AutomationControlled".into()),
+        ));
+    }
     if options.system_dns {
         // Chromium's own DNS client. DNS-over-HTTPS, which Chromium turns on
         // by itself for well-known resolvers, is a preference read at start.

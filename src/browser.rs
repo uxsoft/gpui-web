@@ -223,6 +223,9 @@ pub(crate) struct Page {
     )>,
     pub next_devtools_id: i32,
     pub frame_rate: i32,
+    /// Whether the page says it is automated (`navigator.webdriver`); see
+    /// [`crate::WebView::set_automated`].
+    pub automated: bool,
 }
 
 impl Page {
@@ -260,6 +263,7 @@ impl Page {
             devtools_calls: Vec::new(),
             next_devtools_id: 1000,
             frame_rate: 60,
+            automated: false,
         }
     }
 
@@ -806,6 +810,8 @@ wrap_life_span_handler! {
                 if let Some(geometry) = with_page(&self.page, |p| p.geometry) {
                     p.geometry = geometry;
                 }
+                // What an automated page opens is automated too.
+                p.automated = with_page(&self.page, |p| p.automated).unwrap_or_default();
             }
             if let Some(window_info) = window_info {
                 let mode = runtime::mode();
@@ -839,6 +845,9 @@ wrap_life_span_handler! {
                     with_page(&self.page, |p| p.registrations.push(registration));
                 }
                 host.send_dev_tools_message(Some(TARGET_INFO_REQUEST.as_bytes()));
+                if with_page(&self.page, |p| p.automated).unwrap_or_default() {
+                    send_automation_override(&host, true);
+                }
                 let zoom = with_page(&self.page, |p| p.geometry.zoom_level()).unwrap_or(0.);
                 apply_zoom(&host, zoom);
             }
@@ -898,6 +907,16 @@ fn disposition(d: WindowOpenDisposition) -> Disposition {
 /// Asks a page for its own DevTools target; see [`WebDevTools`].
 const TARGET_INFO_ID: i32 = 1;
 const TARGET_INFO_REQUEST: &str = r#"{"id":1,"method":"Target.getTargetInfo"}"#;
+
+/// Sets `navigator.webdriver` for the page's documents, through the page's
+/// own DevTools session, which lasts as long as the page.
+pub(crate) fn send_automation_override(host: &BrowserHost, automated: bool) {
+    let message = format!(
+        r#"{{"id":2,"method":"Emulation.setAutomationOverride","params":{{"enabled":{automated}}}}}"#
+    );
+    host.send_dev_tools_message(Some(message.as_bytes()));
+    runtime::schedule_pump(0);
+}
 
 wrap_dev_tools_message_observer! {
     struct WebDevTools {
@@ -1012,7 +1031,9 @@ wrap_permission_handler! {
 
     impl PermissionHandler {
         // Pages can't show Chromium's prompts, which CEF then ignores: a
-        // request waiting for local network access would wait for ever.
+        // request would wait for ever. Local network access is granted when
+        // the app allows it; everything else is dismissed, as a person
+        // closing the prompt would, so the page can ask again later.
         fn on_show_permission_prompt(
             &self,
             _browser: Option<&mut Browser>,
@@ -1027,10 +1048,11 @@ wrap_permission_handler! {
                 | T::CEF_PERMISSION_TYPE_LOCAL_NETWORK_ACCESS_DEPRECATED as u32;
             let only_local = requested_permissions != 0 && requested_permissions & !local == 0;
             let Some(callback) = callback else { return 0 };
-            if !(only_local && ALLOW_LOCAL_NETWORK.load(Ordering::Relaxed)) {
-                return 0;
-            }
-            callback.cont(PermissionRequestResult::ACCEPT);
+            callback.cont(if only_local && ALLOW_LOCAL_NETWORK.load(Ordering::Relaxed) {
+                PermissionRequestResult::ACCEPT
+            } else {
+                PermissionRequestResult::DISMISS
+            });
             1
         }
     }

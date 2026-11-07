@@ -204,6 +204,25 @@ impl WebView {
         self.page.borrow().can_go_forward
     }
 
+    /// Whether the page tells its documents they are automated
+    /// (`navigator.webdriver`): set it for pages a DevTools client drives.
+    /// Pages it opens inherit it. With remote debugging on, Chromium would
+    /// otherwise say so on every page, and bot checks turn people away.
+    pub fn set_automated(&self, automated: bool) {
+        let host = {
+            let mut page = self.page.borrow_mut();
+            if page.automated == automated {
+                return;
+            }
+            page.automated = automated;
+            page.host()
+        };
+        // Before the browser exists, `on_after_created` sends it.
+        if let Some(host) = host {
+            crate::browser::send_automation_override(&host, automated);
+        }
+    }
+
     /// The page's DevTools target id, once [`WebViewEvent::Ready`] came.
     pub fn target_id(&self) -> Option<String> {
         self.page.borrow().target_id.clone()
