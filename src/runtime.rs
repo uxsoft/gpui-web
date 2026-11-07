@@ -260,25 +260,10 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
     std::fs::create_dir_all(&options.root_cache_dir)
         .map_err(|e| format!("creating {}: {e}", options.root_cache_dir.display()))?;
     let mut switches = crate::platform::switches(mode);
-    match options.remote_debugging {
-        RemoteDebugging::Off => {}
-        RemoteDebugging::Pipe if crate::devtools::pipe_reserved() => {
-            switches.push(("remote-debugging-pipe".into(), None));
-        }
-        RemoteDebugging::Pipe | RemoteDebugging::Port => {
-            switches.push(("remote-debugging-port".into(), Some("0".into())));
-        }
-    }
-    if options.remote_debugging != RemoteDebugging::Off {
-        // Remote debugging alone makes Chromium tell every page it is
-        // automated (`navigator.webdriver`), and bot checks such as
-        // Cloudflare's then never let a person through. Pages a DevTools
-        // client drives say so themselves: `WebView::set_automated`.
-        switches.push((
-            "disable-blink-features".into(),
-            Some("AutomationControlled".into()),
-        ));
-    }
+    switches.extend(remote_debugging_switches(
+        options.remote_debugging,
+        crate::devtools::pipe_reserved(),
+    ));
     if options.system_dns {
         // Chromium's own DNS client. DNS-over-HTTPS, which Chromium turns on
         // by itself for well-known resolvers, is a preference read at start.
@@ -339,6 +324,32 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
     }
     tracing::info!("CEF started ({mode:?})");
     Ok(())
+}
+
+/// The switches for `remote_debugging`: the pipe when it is, and can be
+/// (`pipe_reserved`), else a port.
+fn remote_debugging_switches(
+    remote_debugging: RemoteDebugging,
+    pipe_reserved: bool,
+) -> Vec<(String, Option<String>)> {
+    let transport = match remote_debugging {
+        RemoteDebugging::Off => return Vec::new(),
+        RemoteDebugging::Pipe if pipe_reserved => ("remote-debugging-pipe".into(), None),
+        RemoteDebugging::Pipe | RemoteDebugging::Port => {
+            ("remote-debugging-port".into(), Some("0".into()))
+        }
+    };
+    vec![
+        transport,
+        // Remote debugging alone, whatever its transport, makes Chromium
+        // tell every page it is automated (`navigator.webdriver`), and bot
+        // checks such as Cloudflare's then never let a person through. Pages
+        // a DevTools client drives say so themselves: `WebView::set_automated`.
+        (
+            "disable-blink-features".into(),
+            Some("AutomationControlled".into()),
+        ),
+    ]
 }
 
 /// Adds `feature` to the `disable-features` switch: a second switch would
@@ -503,7 +514,10 @@ impl PartialEq for Profile {
 
 #[cfg(test)]
 mod tests {
-    use super::{accept_languages_for, disable_feature, turn_off_secure_dns};
+    use super::{
+        accept_languages_for, disable_feature, remote_debugging_switches, turn_off_secure_dns,
+    };
+    use crate::types::RemoteDebugging;
 
     #[test]
     fn secure_dns_is_turned_off_in_the_local_state() {
@@ -532,6 +546,35 @@ mod tests {
             })
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn remote_debugging_never_marks_pages_automated() {
+        let not_automated = (
+            "disable-blink-features".to_string(),
+            Some("AutomationControlled".to_string()),
+        );
+        let pipe = ("remote-debugging-pipe".to_string(), None);
+        let port = ("remote-debugging-port".to_string(), Some("0".to_string()));
+        assert_eq!(
+            remote_debugging_switches(RemoteDebugging::Pipe, true),
+            vec![pipe, not_automated.clone()]
+        );
+        // Without its fds, the pipe falls back to a port.
+        for (option, reserved) in [
+            (RemoteDebugging::Pipe, false),
+            (RemoteDebugging::Port, true),
+            (RemoteDebugging::Port, false),
+        ] {
+            assert_eq!(
+                remote_debugging_switches(option, reserved),
+                vec![port.clone(), not_automated.clone()]
+            );
+        }
+        assert_eq!(
+            remote_debugging_switches(RemoteDebugging::Off, true),
+            vec![]
+        );
     }
 
     #[test]
