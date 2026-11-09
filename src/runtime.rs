@@ -84,7 +84,12 @@ pub fn window_background() -> WindowBackgroundAppearance {
 enum State {
     Idle,
     Running,
-    Failed(String),
+    /// CEF couldn't start; `retryable` unless `CefInitialize` itself ran,
+    /// which a process gets one go at.
+    Failed {
+        error: String,
+        retryable: bool,
+    },
     Stopped,
 }
 
@@ -186,6 +191,7 @@ pub fn init(options: RuntimeOptions, cx: &mut App) {
             if is_running() {
                 do_message_loop_work();
             }
+            crate::browser::run_deferred();
         }
     })
     .detach();
@@ -226,7 +232,7 @@ pub(crate) fn ensure_started() -> Result<(), String> {
         None => Err("gpui_web::init wasn't called".to_string()),
         Some(r) => match &r.state {
             State::Running => Ok(None),
-            State::Failed(err) => Err(err.clone()),
+            State::Failed { error, .. } => Err(error.clone()),
             State::Stopped => Err("the browser engine has shut down".to_string()),
             State::Idle => Ok(Some((r.options.clone(), r.mode))),
         },
@@ -239,26 +245,85 @@ pub(crate) fn ensure_started() -> Result<(), String> {
         if let Some(r) = r {
             r.state = match &result {
                 Ok(()) => State::Running,
-                Err(err) => State::Failed(err.clone()),
+                Err(failure) => State::Failed {
+                    error: failure.error.clone(),
+                    retryable: failure.retryable,
+                },
             }
         }
     });
-    if result.is_ok() {
-        schedule_pump(0);
+    match result {
+        Ok(()) => {
+            schedule_pump(0);
+            Ok(())
+        }
+        Err(failure) => {
+            tracing::error!("gpui_web: {}", failure.error);
+            Err(failure.error)
+        }
     }
-    result
 }
 
-fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
+/// Why CEF didn't start.
+struct StartFailure {
+    error: String,
+    /// Whether starting again may work: `CefInitialize` didn't run.
+    retryable: bool,
+}
+
+impl From<String> for StartFailure {
+    fn from(error: String) -> Self {
+        Self {
+            error,
+            retryable: true,
+        }
+    }
+}
+
+/// Why the browser engine couldn't start, if it couldn't.
+pub fn engine_error() -> Option<String> {
+    RUNTIME.with_borrow(|r| match r.as_ref().map(|r| &r.state) {
+        Some(State::Failed { error, .. }) => Some(error.clone()),
+        _ => None,
+    })
+}
+
+/// Lets the next page try to start the browser engine again, after it
+/// failed for a reason that may have passed (a cache directory it couldn't
+/// create, say). False when a retry can't work: Chromium's own start
+/// failed, and only a new process can try again.
+pub fn retry_engine() -> bool {
+    RUNTIME.with_borrow_mut(|r| {
+        let Some(r) = r else { return false };
+        match r.state {
+            State::Failed {
+                retryable: true, ..
+            } => {
+                r.state = State::Idle;
+                true
+            }
+            State::Failed {
+                retryable: false, ..
+            }
+            | State::Stopped => false,
+            State::Idle | State::Running => true,
+        }
+    })
+}
+
+fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), StartFailure> {
     #[cfg(target_os = "macos")]
     if !crate::platform::macos::framework_loaded() && !crate::platform::macos::load_framework() {
-        return Err("The Chromium Embedded Framework isn't in the app bundle.".into());
+        return Err(
+            String::from("The Chromium Embedded Framework isn't in the app bundle.").into(),
+        );
     }
     // Selects CEF's API version; handle_subprocess already did, unless the
     // subprocesses run from another executable.
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     std::fs::create_dir_all(&options.root_cache_dir)
-        .map_err(|e| format!("creating {}: {e}", options.root_cache_dir.display()))?;
+        .map_err(|e| format!("creating {}: {e}", options.root_cache_dir.display()))
+        .map_err(StartFailure::from)?;
     let mut switches = crate::platform::switches(mode);
     switches.extend(remote_debugging_switches(
         options.remote_debugging,
@@ -320,7 +385,10 @@ fn start(options: &RuntimeOptions, mode: Mode) -> Result<(), String> {
         std::ptr::null_mut(),
     ) != 1
     {
-        return Err("Chromium failed to start (CefInitialize)".into());
+        return Err(StartFailure {
+            error: "Chromium failed to start (CefInitialize)".into(),
+            retryable: false,
+        });
     }
     tracing::info!("CEF started ({mode:?})");
     Ok(())
@@ -449,7 +517,9 @@ pub fn shutdown(timeout: Duration) {
         do_message_loop_work();
         std::thread::sleep(Duration::from_millis(2));
     }
+    crate::browser::run_deferred();
     crate::browser::forget_all();
+    forget_profiles();
     RUNTIME.with_borrow_mut(|r| {
         if let Some(r) = r {
             r.state = State::Stopped;
@@ -469,21 +539,44 @@ struct ProfileInner {
     context: RefCell<Option<RequestContext>>,
 }
 
+thread_local! {
+    /// Every profile, so their request contexts go before CEF does.
+    static PROFILES: RefCell<Vec<std::rc::Weak<ProfileInner>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drops every profile's request context: CEF objects released after
+/// `cef::shutdown` crash.
+fn forget_profiles() {
+    let profiles: Vec<_> = PROFILES
+        .with_borrow_mut(|profiles| profiles.drain(..).filter_map(|p| p.upgrade()).collect());
+    for profile in profiles {
+        if let Ok(mut context) = profile.context.try_borrow_mut() {
+            context.take();
+        }
+    }
+}
+
 impl Profile {
     /// A profile kept in `dir`, which must be inside `root_cache_dir`.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self(Rc::new(ProfileInner {
-            dir: Some(dir.into()),
-            context: RefCell::new(None),
-        }))
+        Self::with_dir(Some(dir.into()))
     }
 
     /// The runtime's default profile.
     pub fn default_profile() -> Self {
-        Self(Rc::new(ProfileInner {
-            dir: None,
+        Self::with_dir(None)
+    }
+
+    fn with_dir(dir: Option<PathBuf>) -> Self {
+        let inner = Rc::new(ProfileInner {
+            dir,
             context: RefCell::new(None),
-        }))
+        });
+        PROFILES.with_borrow_mut(|profiles| {
+            profiles.retain(|p| p.strong_count() > 0);
+            profiles.push(Rc::downgrade(&inner));
+        });
+        Self(inner)
     }
 
     pub fn dir(&self) -> Option<&Path> {
@@ -492,6 +585,9 @@ impl Profile {
 
     pub(crate) fn context(&self) -> Option<RequestContext> {
         let dir = self.0.dir.as_ref()?;
+        if !is_running() {
+            return None;
+        }
         let mut context = self.0.context.borrow_mut();
         if context.is_none() {
             std::fs::create_dir_all(dir).ok();
@@ -514,6 +610,48 @@ impl PartialEq for Profile {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_engine_can_retry_unless_chromium_itself_failed() {
+        use super::{RUNTIME, Runtime, State, engine_error, retry_engine};
+        let set = |state| {
+            RUNTIME.with_borrow_mut(|r| {
+                *r = Some(Runtime {
+                    options: crate::types::RuntimeOptions {
+                        root_cache_dir: std::env::temp_dir(),
+                        download_dir: None,
+                        remote_debugging: crate::types::RemoteDebugging::Off,
+                        log_level: crate::types::LogLevel::Warning,
+                        log_file: None,
+                        user_agent_product: None,
+                        system_dns: false,
+                        allow_local_network: false,
+                        subprocess_path: None,
+                    },
+                    state,
+                    live: Default::default(),
+                    mode: crate::platform::mode(),
+                })
+            })
+        };
+        let state = || RUNTIME.with_borrow(|r| matches!(r.as_ref().unwrap().state, State::Idle));
+        assert_eq!(engine_error(), None);
+        set(State::Failed {
+            error: "creating /x: denied".into(),
+            retryable: true,
+        });
+        assert_eq!(engine_error().as_deref(), Some("creating /x: denied"));
+        assert!(retry_engine());
+        assert!(state());
+        assert_eq!(engine_error(), None);
+        set(State::Failed {
+            error: "Chromium failed to start (CefInitialize)".into(),
+            retryable: false,
+        });
+        assert!(!retry_engine());
+        assert!(engine_error().is_some());
+        RUNTIME.with_borrow_mut(|r| *r = None);
+    }
+
     use super::{
         accept_languages_for, disable_feature, remote_debugging_switches, turn_off_secure_dns,
     };

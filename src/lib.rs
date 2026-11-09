@@ -41,12 +41,13 @@ pub use devtools::{devtools_url, take_devtools_pipe};
 pub use element::HoleBackground;
 #[cfg(feature = "cef")]
 pub use runtime::{
-    Profile, handle_subprocess, init, reserve_devtools_pipe, shutdown, window_background,
+    Profile, engine_error, handle_subprocess, init, reserve_devtools_pipe, retry_engine, shutdown,
+    window_background,
 };
 #[cfg(not(feature = "cef"))]
 pub use stub::{
-    HoleBackground, Profile, WebView, chromium_version, handle_subprocess, init,
-    reserve_devtools_pipe, shutdown, window_background,
+    HoleBackground, Profile, WebView, chromium_version, engine_error, handle_subprocess, init,
+    reserve_devtools_pipe, retry_engine, shutdown, window_background,
 };
 pub use types::{
     ContextMenu, DialogKind, Disposition, FileChooser, JsDialog, LogLevel, MediaKind,

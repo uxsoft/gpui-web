@@ -99,6 +99,7 @@ impl WebView {
 
     /// Turns what the page reported into events, and redraws.
     fn flush(&mut self, cx: &mut Context<Self>) {
+        browser::run_deferred();
         let events = {
             let mut page = self.page.borrow_mut();
             page.notify_pending = false;
@@ -178,6 +179,20 @@ impl WebView {
     /// Why the page couldn't open, if it couldn't.
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    /// Tries again to open a page that couldn't ([`Self::error`]), once
+    /// [`crate::retry_engine`] lets a failed engine start again. True when
+    /// the page is open, or on its way.
+    pub fn retry(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.error.is_none() {
+            return true;
+        }
+        let url = self.page.borrow().url.clone();
+        let result = browser::create_browser(&self.page, &url);
+        self.error = result.err();
+        cx.notify();
+        self.error.is_none()
     }
 
     pub fn url(&self) -> String {

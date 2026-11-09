@@ -524,13 +524,58 @@ mod client {
 use client::WebClient;
 
 /// Runs `f` on the page unless something already holds it (a handler called
-/// back from inside a call into CEF that holds the page).
+/// back from inside a call into CEF that holds the page). For reads, and
+/// for what the next callback repeats (a frame); state changes go through
+/// [`update_page`].
 fn with_page<R>(page: &PageRef, f: impl FnOnce(&mut Page) -> R) -> Option<R> {
     match page.try_borrow_mut() {
         Ok(mut page) => Some(f(&mut page)),
         Err(_) => {
-            tracing::warn!("gpui_web: CEF called back while the page was busy");
+            tracing::debug!("gpui_web: CEF called back while the page was busy");
             None
+        }
+    }
+}
+
+/// Runs `f` on the page now, or, when something holds it (a handler called
+/// back from inside a call into CEF that holds the page), right after: a
+/// change of state is never lost.
+fn update_page(page: &PageRef, f: impl FnOnce(&mut Page) + 'static) {
+    match page.try_borrow_mut() {
+        Ok(mut page) => f(&mut page),
+        Err(_) => {
+            let page = page.downgrade();
+            defer(move || {
+                let Some(page) = page.upgrade() else { return };
+                match page.try_borrow_mut() {
+                    Ok(mut page) => f(&mut page),
+                    Err(_) => tracing::warn!("gpui_web: page still busy; dropping an update"),
+                }
+            });
+        }
+    }
+}
+
+thread_local! {
+    /// Work held back from handlers that found their page busy.
+    static DEFERRED: RefCell<Vec<Box<dyn FnOnce()>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Runs `f` once the current call into CEF is over: at the next pump.
+pub(crate) fn defer(f: impl FnOnce() + 'static) {
+    DEFERRED.with_borrow_mut(|deferred| deferred.push(Box::new(f)));
+    runtime::schedule_pump(0);
+}
+
+/// Runs the work [`defer`]red so far, outside any call into CEF.
+pub(crate) fn run_deferred() {
+    loop {
+        let batch = DEFERRED.with_borrow_mut(std::mem::take);
+        if batch.is_empty() {
+            return;
+        }
+        for f in batch {
+            f();
         }
     }
 }
@@ -680,7 +725,7 @@ wrap_display_handler! {
                 return;
             }
             let url = cef_string(url);
-            with_page(&self.page, |p| {
+            update_page(&self.page, move |p| {
                 if p.url != url {
                     p.url = url;
                     p.push(PageEvent::Url);
@@ -690,7 +735,7 @@ wrap_display_handler! {
 
         fn on_title_change(&self, _browser: Option<&mut Browser>, title: Option<&CefString>) {
             let title = cef_string(title);
-            with_page(&self.page, |p| {
+            update_page(&self.page, move |p| {
                 if p.title != title {
                     p.title = title;
                     p.push(PageEvent::Title);
@@ -700,7 +745,7 @@ wrap_display_handler! {
 
         fn on_favicon_urlchange(&self, _browser: Option<&mut Browser>, icon_urls: Option<&mut CefStringList>) {
             let favicon = icon_urls.and_then(|urls| urls.clone().into_iter().next());
-            with_page(&self.page, |p| {
+            update_page(&self.page, move |p| {
                 if p.favicon != favicon {
                     p.favicon = favicon;
                     p.push(PageEvent::Favicon);
@@ -752,7 +797,7 @@ wrap_load_handler! {
             can_go_back: ::std::os::raw::c_int,
             can_go_forward: ::std::os::raw::c_int,
         ) {
-            with_page(&self.page, |p| {
+            update_page(&self.page, move |p| {
                 p.loading = is_loading != 0;
                 p.can_go_back = can_go_back != 0;
                 p.can_go_forward = can_go_forward != 0;
@@ -769,6 +814,54 @@ wrap_load_handler! {
                 }
             }
         }
+    }
+}
+
+/// Takes a page's new browser in: [`WebLifeSpan`]'s `on_after_created`.
+fn after_created(page: &PageRef, browser: Browser) {
+    let opener = with_page(page, |p| {
+        p.browser = Some(browser.clone());
+        p.opener.take()
+    })
+    .flatten();
+    if let Some(host) = browser.host() {
+        let mut observer = WebDevTools::new(page.clone());
+        if let Some(registration) = host.add_dev_tools_message_observer(Some(&mut observer)) {
+            update_page(page, move |p| p.registrations.push(registration));
+        }
+        host.send_dev_tools_message(Some(TARGET_INFO_REQUEST.as_bytes()));
+        if with_page(page, |p| p.automated).unwrap_or_default() {
+            send_automation_override(page, &host, true);
+        }
+        let zoom = with_page(page, |p| p.geometry.zoom_level()).unwrap_or(0.);
+        apply_zoom(&host, zoom);
+    }
+    match opener.and_then(|o| o.upgrade()) {
+        Some(opener) => {
+            let info = with_page(page, |p| p.popup_info.take()).flatten();
+            let (url, disposition, user_gesture) =
+                info.unwrap_or((String::new(), Disposition::Other, false));
+            let event = PageEvent::Popup {
+                page: page.clone(),
+                url,
+                disposition,
+                user_gesture,
+            };
+            match opener.try_borrow_mut() {
+                Ok(mut opener) => opener.push(event),
+                Err(_) => {
+                    let opener = Rc::downgrade(&opener);
+                    defer(move || {
+                        if let Some(opener) = opener.upgrade()
+                            && let Ok(mut opener) = opener.try_borrow_mut()
+                        {
+                            opener.push(event);
+                        }
+                    });
+                }
+            }
+        }
+        None => update_page(page, |p| p.wake()),
     }
 }
 
@@ -839,41 +932,13 @@ wrap_life_span_handler! {
         fn on_after_created(&self, browser: Option<&mut Browser>) {
             let Some(browser) = browser else { return };
             let browser = browser.clone();
-            let opener = with_page(&self.page, |p| {
-                p.browser = Some(browser.clone());
-                p.opener.take()
-            })
-            .flatten();
             runtime::browser_created();
-            if let Some(host) = browser.host() {
-                let mut observer = WebDevTools::new(self.page.clone());
-                if let Some(registration) = host.add_dev_tools_message_observer(Some(&mut observer)) {
-                    with_page(&self.page, |p| p.registrations.push(registration));
-                }
-                host.send_dev_tools_message(Some(TARGET_INFO_REQUEST.as_bytes()));
-                if with_page(&self.page, |p| p.automated).unwrap_or_default() {
-                    send_automation_override(&self.page, &host, true);
-                }
-                let zoom = with_page(&self.page, |p| p.geometry.zoom_level()).unwrap_or(0.);
-                apply_zoom(&host, zoom);
-            }
-            match opener.and_then(|o| o.upgrade()) {
-                Some(opener) => {
-                    let info = with_page(&self.page, |p| p.popup_info.take()).flatten();
-                    let (url, disposition, user_gesture) =
-                        info.unwrap_or((String::new(), Disposition::Other, false));
-                    if let Ok(mut opener) = opener.try_borrow_mut() {
-                        opener.push(PageEvent::Popup {
-                            page: self.page.clone(),
-                            url,
-                            disposition,
-                            user_gesture,
-                        });
-                    }
-                }
-                None => {
-                    with_page(&self.page, |p| p.wake());
-                }
+            // A page that never learns its browser stays blank for good.
+            if self.page.try_borrow_mut().is_ok() {
+                after_created(&self.page, browser);
+            } else {
+                let page = self.page.clone();
+                defer(move || after_created(&page, browser));
             }
         }
 
@@ -883,7 +948,8 @@ wrap_life_span_handler! {
 
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             runtime::browser_closed();
-            with_page(&self.page, |p| {
+            // A page that never hears it closed keeps its tab for good.
+            update_page(&self.page, |p| {
                 p.browser = None;
                 p.closed = true;
                 p.presenter = None;
@@ -1018,7 +1084,7 @@ wrap_request_handler! {
             _error_string: Option<&CefString>,
         ) {
             tracing::warn!("page's renderer ended: {status:?}");
-            with_page(&self.page, |p| p.push(PageEvent::Crashed));
+            update_page(&self.page, |p| p.push(PageEvent::Crashed));
         }
     }
 }
@@ -1361,6 +1427,30 @@ wrap_keyboard_handler! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn updates_to_a_busy_page_wait_rather_than_vanish() {
+        let page = new_page(Profile::default_profile());
+        {
+            let _held = page.borrow_mut();
+            update_page(&page, |p| p.title = "late".into());
+        }
+        assert_eq!(page.borrow().title, "");
+        run_deferred();
+        assert_eq!(page.borrow().title, "late");
+
+        update_page(&page, |p| p.title = "now".into());
+        assert_eq!(page.borrow().title, "now");
+
+        // A page gone by then is skipped.
+        let gone = new_page(Profile::default_profile());
+        {
+            let _held = gone.borrow_mut();
+            update_page(&gone, |p| p.title = "never".into());
+        }
+        drop(gone);
+        run_deferred();
+    }
 
     #[test]
     fn device_rect_geometry_keeps_css_pixels_logical() {

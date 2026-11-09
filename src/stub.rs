@@ -38,6 +38,14 @@ pub fn init(_options: RuntimeOptions, _cx: &mut App) {
 
 pub fn shutdown(_timeout: Duration) {}
 
+pub fn engine_error() -> Option<String> {
+    Some(UNAVAILABLE.to_string())
+}
+
+pub fn retry_engine() -> bool {
+    false
+}
+
 pub fn chromium_version() -> &'static str {
     "(not built in)"
 }
@@ -110,6 +118,10 @@ impl WebView {
 
     pub fn error(&self) -> Option<&str> {
         Some(UNAVAILABLE)
+    }
+
+    pub fn retry(&mut self, _cx: &mut Context<Self>) -> bool {
+        false
     }
 
     pub fn url(&self) -> String {

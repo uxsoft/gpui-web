@@ -41,6 +41,19 @@ fn begin_frame(window: &Window) {
     });
 }
 
+/// Runs `f` on the page's presenter without holding the page, so CEF can
+/// call back into it meanwhile; a page that closed meanwhile drops it.
+fn with_presenter(page: &PageRef, f: impl FnOnce(&mut dyn platform::Presenter)) {
+    let Some(mut presenter) = page.borrow_mut().presenter.take() else {
+        return;
+    };
+    f(presenter.as_mut());
+    let mut page = page.borrow_mut();
+    if !page.closed && page.presenter.is_none() {
+        page.presenter = Some(presenter);
+    }
+}
+
 fn register(window: &Window, page: &PageRef, hole: Option<Bounds<Pixels>>) {
     FRAMES.with_borrow_mut(|frames| {
         let frame = frames
@@ -353,9 +366,6 @@ impl Element for WebViewElement {
                 .clamp(30, 240);
             let rate_changed = std::mem::replace(&mut page.frame_rate, rate) != rate;
             let browser = page.browser.clone();
-            if let Some(presenter) = &mut page.presenter {
-                presenter.place(&placement, window, cx);
-            }
             (
                 page.host(),
                 resized,
@@ -366,6 +376,9 @@ impl Element for WebViewElement {
                 page.cursor,
             )
         };
+        with_presenter(&self.page, |presenter| {
+            presenter.place(&placement, window, cx)
+        });
         if let Some(host) = &host {
             if resized {
                 host.was_resized();
@@ -381,10 +394,7 @@ impl Element for WebViewElement {
             }
         }
         if let Some(browser) = bind {
-            let mut page = self.page.borrow_mut();
-            if let Some(presenter) = &mut page.presenter {
-                presenter.set_browser(&browser);
-            }
+            with_presenter(&self.page, |presenter| presenter.set_browser(&browser));
         }
 
         let focused = self.focus.is_focused(window);
