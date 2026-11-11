@@ -1121,6 +1121,8 @@ pub(crate) struct WaylandPresenter {
     pool_size: (i32, i32),
     /// The pool buffer last attached.
     attached: Option<usize>,
+    /// The size of the buffer on our surface, which the crop must fit.
+    surface_buffer: Option<(i32, i32)>,
     shown: bool,
     /// Position and size on screen (logical px, relative to GPUI's surface).
     position: Option<(i32, i32)>,
@@ -1188,6 +1190,7 @@ impl WaylandPresenter {
             retired: Vec::new(),
             pool_size: (0, 0),
             attached: None,
+            surface_buffer: None,
             shown: false,
             position: None,
             destination: None,
@@ -1311,7 +1314,8 @@ impl WaylandPresenter {
         if self.shown {
             self.surface.attach(Some(&self.pool[ix].buffer), 0, 0);
             self.surface.damage_buffer(0, 0, size.0, size.1);
-            self.apply_source(size);
+            self.surface_buffer = Some(size);
+            self.apply_source();
             self.surface.commit();
             self.globals.conn.flush().ok();
         }
@@ -1324,18 +1328,12 @@ impl WaylandPresenter {
         Ok(self.synced)
     }
 
-    /// Crops the buffer to the visible part of the page.
-    fn apply_source(&mut self, size: (i32, i32)) {
-        let source = self.source.map(|(x, y, w, h)| {
-            // `source` is relative to the expected size; scale to this buffer.
-            let kx = size.0 as f64 / self.expected.0.max(1) as f64;
-            let ky = size.1 as f64 / self.expected.1.max(1) as f64;
-            (x * kx, y * ky, w * kx, h * ky)
-        });
-        match source {
-            Some((x, y, w, h)) => self.viewport.set_source(x, y, w, h),
-            None => self.viewport.set_source(-1., -1., -1., -1.),
-        }
+    /// Crops the buffer on our surface to the visible part of the page.
+    fn apply_source(&mut self) {
+        let source = self
+            .surface_buffer
+            .and_then(|buffer| viewport_source(self.source, self.expected, buffer));
+        set_viewport_source(&self.viewport, source);
     }
 
     fn upload_popup(&mut self, pixels: &[u8], size: (i32, i32)) -> Result<()> {
@@ -1415,6 +1413,85 @@ impl WaylandPresenter {
     }
 }
 
+// --- Viewport geometry ---
+//
+// A protocol error ends the Wayland connection, and ours is GPUI's: one bad
+// `wp_viewport` request closes the app. Everything we send it is checked.
+
+/// The resolution of `wl_fixed`, in which the source rectangle travels.
+const FIXED_STEP: f64 = 1. / 256.;
+
+fn floor_to_fixed(v: f64) -> f64 {
+    (v / FIXED_STEP).floor() * FIXED_STEP
+}
+
+/// The destination size for a page `visible` logical px large, or `None`
+/// when it rounds to nothing: `wp_viewport` rejects a zero size.
+fn viewport_destination(visible: (f32, f32)) -> Option<(i32, i32)> {
+    let (w, h) = (visible.0.round(), visible.1.round());
+    (w.is_finite() && h.is_finite() && w >= 1. && h >= 1.).then_some((w as i32, h as i32))
+}
+
+/// The source rectangle cropping a `buffer`-sized buffer to `crop`, given
+/// relative to the `expected` buffer size; `None` unsets the crop. It falls
+/// on `wl_fixed` steps inside the buffer, and is never empty.
+fn viewport_source(
+    crop: Option<(f64, f64, f64, f64)>,
+    expected: (i32, i32),
+    buffer: (i32, i32),
+) -> Option<(f64, f64, f64, f64)> {
+    let (x, y, w, h) = crop?;
+    if buffer.0 <= 0 || buffer.1 <= 0 {
+        return None;
+    }
+    let (bw, bh) = (buffer.0 as f64, buffer.1 as f64);
+    // `crop` is relative to the expected size; scale to this buffer.
+    let kx = bw / expected.0.max(1) as f64;
+    let ky = bh / expected.1.max(1) as f64;
+    let edge = |v: f64, max: f64| floor_to_fixed(v.clamp(0., max));
+    let (x0, y0) = (edge(x * kx, bw), edge(y * ky, bh));
+    let (x1, y1) = (edge((x + w) * kx, bw), edge((y + h) * ky, bh));
+    let source = (x0, y0, x1 - x0, y1 - y0);
+    valid_source(source).then_some(source)
+}
+
+fn valid_source((x, y, w, h): (f64, f64, f64, f64)) -> bool {
+    [x, y, w, h].iter().all(|v| v.is_finite())
+        && x >= 0.
+        && y >= 0.
+        && w >= FIXED_STEP
+        && h >= FIXED_STEP
+}
+
+/// Says once that a request was dropped: one bad frame shouldn't fill the log.
+fn warn_dropped(request: &str) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!("web view: dropped a {request} the compositor would reject");
+    }
+}
+
+fn set_viewport_source(viewport: &WpViewport, source: Option<(f64, f64, f64, f64)>) {
+    match source {
+        Some((x, y, w, h)) if valid_source((x, y, w, h)) => viewport.set_source(x, y, w, h),
+        Some(source) => {
+            debug_assert!(false, "invalid viewport source {source:?}");
+            warn_dropped("viewport source");
+            viewport.set_source(-1., -1., -1., -1.);
+        }
+        None => viewport.set_source(-1., -1., -1., -1.),
+    }
+}
+
+fn set_viewport_destination(viewport: &WpViewport, (w, h): (i32, i32)) {
+    if w > 0 && h > 0 {
+        viewport.set_destination(w, h);
+    } else {
+        debug_assert!(false, "invalid viewport destination {w}x{h}");
+        warn_dropped("viewport destination");
+    }
+}
+
 impl Presenter for WaylandPresenter {
     fn punches_hole(&self) -> bool {
         true
@@ -1449,7 +1526,14 @@ impl Presenter for WaylandPresenter {
         let scale = self.scale().unwrap_or_else(|| window.scale_factor());
         let logical = |v: gpui::Pixels| f32::from(v).round() as i32;
         let position = (logical(visible.origin.x), logical(visible.origin.y));
-        let destination = (logical(visible.size.width), logical(visible.size.height));
+        // The compositor ends GPUI's connection over a zero-sized viewport.
+        let Some(destination) = viewport_destination((
+            f32::from(visible.size.width),
+            f32::from(visible.size.height),
+        )) else {
+            self.hide();
+            return;
+        };
         let bounds = place.bounds;
         self.expected = (
             (f32::from(bounds.size.width) * scale).round() as i32,
@@ -1473,11 +1557,11 @@ impl Presenter for WaylandPresenter {
             // commit, and so does our state while synchronized.
             self.set_sync(true);
             self.subsurface.set_position(position.0, position.1);
-            self.viewport.set_destination(destination.0, destination.1);
+            set_viewport_destination(&self.viewport, destination);
             self.position = Some(position);
             self.destination = Some(destination);
             self.source = source;
-            self.apply_source(self.pool_size);
+            self.apply_source();
             commit = true;
             if self.pool_size != self.expected {
                 self.sync_until = Some(self.expected);
@@ -1494,6 +1578,8 @@ impl Presenter for WaylandPresenter {
             if let Some(ix) = self.attached {
                 self.surface.attach(Some(&self.pool[ix].buffer), 0, 0);
                 self.surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
+                self.surface_buffer = Some(self.pool_size);
+                self.apply_source();
                 commit = true;
             }
         }
@@ -1509,6 +1595,7 @@ impl Presenter for WaylandPresenter {
         }
         self.shown = false;
         self.surface.attach(None, 0, 0);
+        self.surface_buffer = None;
         self.surface.commit();
         self.globals.conn.flush().ok();
     }
@@ -1600,5 +1687,66 @@ impl Drop for WaylandPresenter {
         self.subsurface.destroy();
         self.surface.destroy();
         self.globals.conn.flush().ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inside(source: (f64, f64, f64, f64), buffer: (i32, i32)) -> bool {
+        valid_source(source)
+            && source.0 + source.2 <= buffer.0 as f64
+            && source.1 + source.3 <= buffer.1 as f64
+    }
+
+    #[test]
+    fn a_sliver_has_no_destination() {
+        assert_eq!(viewport_destination((0.4, 300.)), None);
+        assert_eq!(viewport_destination((300., 0.49)), None);
+        assert_eq!(viewport_destination((f32::NAN, 300.)), None);
+        assert_eq!(viewport_destination((0.6, 300.4)), Some((1, 300)));
+    }
+
+    #[test]
+    fn no_crop_before_the_first_buffer() {
+        let crop = Some((10., 0., 100., 50.));
+        assert_eq!(viewport_source(crop, (200, 100), (0, 0)), None);
+    }
+
+    #[test]
+    fn an_unclipped_page_has_no_crop() {
+        assert_eq!(viewport_source(None, (200, 100), (200, 100)), None);
+    }
+
+    #[test]
+    fn a_crop_too_small_to_send_is_unset() {
+        let crop = Some((10., 0., 0.001, 50.));
+        assert_eq!(viewport_source(crop, (200, 100), (200, 100)), None);
+    }
+
+    #[test]
+    fn a_crop_scales_to_a_buffer_of_another_size() {
+        let crop = Some((100., 0., 100., 100.));
+        let source = viewport_source(crop, (200, 100), (100, 50)).unwrap();
+        assert_eq!(source, (50., 0., 50., 50.));
+        assert!(inside(source, (100, 50)));
+    }
+
+    #[test]
+    fn a_crop_never_leaves_its_buffer() {
+        let buffer = (997, 613);
+        for i in 0..500 {
+            let k = 1. + i as f64 / 333.;
+            let x = 997. / 3. * k;
+            let crop = Some((x, 0.1 * k, 997. * k - x + 0.37, 613. * k));
+            let expected = ((997. * k) as i32, (613. * k) as i32);
+            if let Some(source) = viewport_source(crop, expected, buffer) {
+                assert!(inside(source, buffer), "{crop:?} -> {source:?}");
+            }
+        }
+        // A crop starting before the page is clamped to it.
+        let source = viewport_source(Some((-3., -1., 50., 50.)), buffer, buffer).unwrap();
+        assert_eq!((source.0, source.1), (0., 0.));
     }
 }
