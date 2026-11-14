@@ -566,7 +566,7 @@ pub(crate) fn cursor_style(cursor: CursorType) -> CursorStyle {
 mod tests {
     use super::*;
 
-    fn stroke(s: &str) -> Keystroke {
+    fn stroke(s: &'static str) -> Keystroke {
         Keystroke::parse(s).unwrap()
     }
 

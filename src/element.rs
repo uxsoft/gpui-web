@@ -20,6 +20,7 @@ use crate::runtime;
 use crate::webview::WebView;
 
 /// Holes and drawn pages of each window, this frame and the last.
+#[cfg(not(feature = "gpui-fast"))]
 #[derive(Default)]
 struct WindowFrame {
     holes: Vec<Bounds<Pixels>>,
@@ -27,10 +28,27 @@ struct WindowFrame {
     previous: Vec<Weak<RefCell<Page>>>,
 }
 
+/// The holes of each window's pages, kept from frame to frame.
+///
+/// gpui-fast draws a view nothing changed in again from the last frame,
+/// without prepainting or painting it, so a page and the background around
+/// it don't both run every frame. Each page keeps its hole until its
+/// element leaves the tree ([`PageGuard`]); a change to a hole redraws the
+/// window in full, so the background cuts it out.
+#[cfg(feature = "gpui-fast")]
+#[derive(Default)]
+struct WindowFrame {
+    holes: HashMap<usize, Bounds<Pixels>>,
+}
+
 thread_local! {
     static FRAMES: RefCell<HashMap<WindowId, WindowFrame>> = RefCell::new(HashMap::new());
 }
 
+#[cfg(feature = "gpui-fast")]
+fn begin_frame(_window: &Window) {}
+
+#[cfg(not(feature = "gpui-fast"))]
 fn begin_frame(window: &Window) {
     FRAMES.with_borrow_mut(|frames| {
         let frame = frames
@@ -54,7 +72,8 @@ fn with_presenter(page: &PageRef, f: impl FnOnce(&mut dyn platform::Presenter)) 
     }
 }
 
-fn register(window: &Window, page: &PageRef, hole: Option<Bounds<Pixels>>) {
+#[cfg(not(feature = "gpui-fast"))]
+fn register(window: &mut Window, _cx: &mut App, page: &PageRef, hole: Option<Bounds<Pixels>>) {
     FRAMES.with_borrow_mut(|frames| {
         let frame = frames
             .entry(window.window_handle().window_id())
@@ -64,8 +83,98 @@ fn register(window: &Window, page: &PageRef, hole: Option<Bounds<Pixels>>) {
     });
 }
 
+/// Keeps the page's hole, and its element's [`PageGuard`]; a hole that
+/// changed redraws the window.
+#[cfg(feature = "gpui-fast")]
+fn register(window: &mut Window, cx: &mut App, page: &PageRef, hole: Option<Bounds<Pixels>>) {
+    let window_id = window.window_handle().window_id();
+    let key = page_key(page);
+    let changed = FRAMES.with_borrow_mut(|frames| {
+        let holes = &mut frames.entry(window_id).or_default().holes;
+        let old = match hole {
+            Some(hole) => holes.insert(key, hole),
+            None => holes.remove(&key),
+        };
+        old != hole
+    });
+    if changed {
+        refresh_later(window.window_handle(), cx.to_async());
+    }
+}
+
+#[cfg(feature = "gpui-fast")]
+fn page_key(page: &PageRef) -> usize {
+    page.downgrade().as_ptr() as usize
+}
+
+/// Redraws the window in full once the frame being drawn is done: a
+/// refresh asked for while drawing is dropped.
+#[cfg(feature = "gpui-fast")]
+fn refresh_later(window: gpui::AnyWindowHandle, cx: gpui::AsyncApp) {
+    use gpui::AppContext as _;
+    cx.spawn(async move |cx| cx.update_window(window, |_, window, _| window.refresh()))
+        .detach();
+}
+
+/// Held in a drawn page's element state, which gpui-fast keeps while the
+/// element is drawn, even again from the last frame, and drops once it
+/// isn't: the page then goes off screen and its hole closes.
+#[cfg(feature = "gpui-fast")]
+struct PageGuard {
+    window: gpui::AnyWindowHandle,
+    key: usize,
+    page: Weak<RefCell<Page>>,
+    cx: gpui::AsyncApp,
+}
+
+#[cfg(feature = "gpui-fast")]
+impl Drop for PageGuard {
+    fn drop(&mut self) {
+        let closed = FRAMES.with_borrow_mut(|frames| {
+            frames
+                .get_mut(&self.window.window_id())
+                .and_then(|frame| frame.holes.remove(&self.key))
+                .is_some()
+        });
+        if let Some(page) = self.page.upgrade() {
+            take_off_screen(&page);
+        }
+        if closed {
+            refresh_later(self.window, self.cx.clone());
+        }
+    }
+}
+
+#[cfg(feature = "gpui-fast")]
+fn finish_frame(window: &Window) -> Vec<Bounds<Pixels>> {
+    FRAMES.with_borrow(|frames| {
+        frames
+            .get(&window.window_handle().window_id())
+            .map(|frame| frame.holes.values().copied().collect())
+            .unwrap_or_default()
+    })
+}
+
+/// Hides a page no longer drawn; it keeps running (agents use it), more
+/// slowly.
+fn take_off_screen(page: &RefCell<Page>) {
+    let host = match page.try_borrow_mut() {
+        Ok(mut page) => {
+            if let Some(presenter) = &mut page.presenter {
+                presenter.hide();
+            }
+            page.host()
+        }
+        Err(_) => None,
+    };
+    if let Some(host) = host {
+        host.set_windowless_frame_rate(HIDDEN_FRAME_RATE);
+    }
+}
+
 /// This frame's holes; pages drawn last frame but not this one go off
 /// screen.
+#[cfg(not(feature = "gpui-fast"))]
 fn finish_frame(window: &Window) -> Vec<Bounds<Pixels>> {
     let (holes, gone) = FRAMES.with_borrow_mut(|frames| {
         let Some(frame) = frames.get_mut(&window.window_handle().window_id()) else {
@@ -80,19 +189,7 @@ fn finish_frame(window: &Window) -> Vec<Bounds<Pixels>> {
         (frame.holes.clone(), gone)
     });
     for page in gone {
-        let host = match page.try_borrow_mut() {
-            Ok(mut page) => {
-                if let Some(presenter) = &mut page.presenter {
-                    presenter.hide();
-                }
-                page.host()
-            }
-            Err(_) => None,
-        };
-        // Pages off screen keep running (agents use them), more slowly.
-        if let Some(host) = host {
-            host.set_windowless_frame_rate(HIDDEN_FRAME_RATE);
-        }
+        take_off_screen(&page);
     }
     holes
 }
@@ -108,7 +205,8 @@ const HIDDEN_FRAME_RATE: i32 = 10;
 /// ```
 ///
 /// Pages must not be inside a `.cached()` view: a page that isn't drawn in
-/// a frame is taken off screen.
+/// a frame is taken off screen. With the `gpui-fast` feature they may be,
+/// since that GPUI draws any view again from the last frame.
 pub struct HoleBackground {
     color: Hsla,
 }
@@ -271,6 +369,13 @@ impl Element for WebViewElement {
     type PrepaintState = Prepainted;
 
     fn id(&self) -> Option<ElementId> {
+        // Its state holds the page's PageGuard.
+        #[cfg(feature = "gpui-fast")]
+        return Some(ElementId::NamedInteger(
+            "gpui-web-page".into(),
+            self.view.entity_id().as_u64(),
+        ));
+        #[cfg(not(feature = "gpui-fast"))]
         None
     }
 
@@ -295,13 +400,28 @@ impl Element for WebViewElement {
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut (),
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) -> Prepainted {
+        #[cfg(feature = "gpui-fast")]
+        if let Some(id) = id {
+            // Made only once: dropping a spare would take the page off screen.
+            window.with_element_state::<PageGuard, _>(id, |old, window| {
+                let guard = old.unwrap_or_else(|| PageGuard {
+                    window: window.window_handle(),
+                    key: page_key(&self.page),
+                    page: self.page.downgrade(),
+                    cx: cx.to_async(),
+                });
+                ((), guard)
+            });
+        }
+        #[cfg(not(feature = "gpui-fast"))]
+        let _ = id;
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let mut page = self.page.borrow_mut();
         if page.presenter.is_none() && !page.closed {
@@ -320,7 +440,7 @@ impl Element for WebViewElement {
         let visible = snapped.intersect(&window.content_mask().bounds);
         drop(page);
         let hole = (punches_hole && has_content).then_some(visible);
-        register(window, &self.page, hole);
+        register(window, cx, &self.page, hole);
         Prepainted {
             hitbox,
             placement: Placement {
