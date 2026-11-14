@@ -425,6 +425,7 @@ impl Element for WebViewElement {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let mut page = self.page.borrow_mut();
         if page.presenter.is_none() && !page.closed {
+            crate::keep_reading_display(window);
             page.presenter = Some(platform::create(window, runtime::mode()));
         }
         let (punches_hole, has_content, scale) =
