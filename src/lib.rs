@@ -19,6 +19,9 @@
 //! downloading Chromium: the API stays, and every page reports
 //! [`WebView::error`].
 
+#[cfg(feature = "gpui-fast")]
+extern crate gpui_fast as gpui;
+
 #[cfg(feature = "cef")]
 mod browser;
 mod devtools;

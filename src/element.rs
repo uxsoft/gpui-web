@@ -11,7 +11,7 @@ use gpui::{
     App, Bounds, DispatchPhase, Element, ElementId, ElementInputHandler, Entity, FocusHandle,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels,
-    ScrollDelta, ScrollWheelEvent, Style, Window, WindowId, fill, point, px, relative, size,
+    ScrollDelta, ScrollEvent, Style, Window, WindowId, fill, point, px, relative, size,
 };
 
 use crate::browser::{self, Geometry, Page, PageRef};
@@ -532,7 +532,7 @@ impl WebViewElement {
             let view = self.view.clone();
             let hitbox = hitbox.clone();
             let page = self.page.clone();
-            move |event: &ScrollWheelEvent, phase, window, cx| {
+            move |event: &ScrollEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble || !hitbox.is_hovered(window) {
                     return;
                 }

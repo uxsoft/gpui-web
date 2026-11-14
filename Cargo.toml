@@ -16,6 +16,9 @@ default = ["cef"]
 cef = ["dep:cef", "dep:image"]
 # Type-checks without CEF's binaries (cross-platform `cargo check`).
 dox = ["cef", "cef/dox"]
+# Builds on gpui-fast (longbridge's retained-mode GPUI fork) instead of
+# gpui-pre, for apps that turn on gpui-kit's `gpui-fast`.
+gpui-fast = ["dep:gpui-fast"]
 
 [dependencies]
 anyhow = "1"
@@ -25,7 +28,8 @@ tracing = "0.1"
 # Pinned: the presenters rely on GPUI behavior that is not API (Wayland
 # surface alpha, the topmost DirectComposition target). Re-run the spikes in
 # examples/ before bumping.
-gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+gpui-fast = { package = "gpui-fast", version = "=0.1.15", features = ["windows-manifest-provided-by-host"], optional = true }
 raw-window-handle = { version = "0.6", features = ["std"] }
 async-channel = "2"
 # One CEF (Chromium 154) on every platform. No sandbox in v1 (see README).
@@ -63,7 +67,7 @@ windows = { version = "0.62", features = [
 ] }
 
 [dev-dependencies]
-gpui-kit = "0.7"
+gpui-kit = "0.9"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # The examples drive the real browser.
