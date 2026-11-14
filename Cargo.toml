@@ -66,6 +66,9 @@ windows = { version = "0.62", features = [
 gpui-kit = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+wayland-server = "0.31"
+
 # The examples drive the real browser.
 [[example]]
 name = "browser"

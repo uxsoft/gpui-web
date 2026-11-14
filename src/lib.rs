@@ -9,7 +9,8 @@
 //! Setup:
 //! 1. First thing in `main`: `if let Some(code) = gpui_web::handle_subprocess(true) { exit(code) }`
 //!    (CEF runs its renderer and GPU processes from the same executable).
-//! 2. At app start: [`init`], and [`window_background`] for the window.
+//! 2. At app start: [`init`], and [`window_background`] for the window;
+//!    [`keep_reading_display`] once it is open.
 //! 3. [`HoleBackground`] as the window root's background.
 //! 4. [`WebView::new`] for each page; [`shutdown`] when the app quits.
 //!
@@ -22,6 +23,7 @@
 #[cfg(feature = "cef")]
 mod browser;
 mod devtools;
+mod display;
 #[cfg(feature = "cef")]
 mod element;
 #[cfg(feature = "cef")]
@@ -37,6 +39,7 @@ mod types;
 mod webview;
 
 pub use devtools::{devtools_url, take_devtools_pipe};
+pub use display::keep_reading_display;
 #[cfg(feature = "cef")]
 pub use element::HoleBackground;
 #[cfg(feature = "cef")]

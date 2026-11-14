@@ -132,6 +132,8 @@ pub(crate) fn schedule_pump(delay_ms: i64) {
 
 /// Sets CEF up to start with the first web view, and starts the message
 /// pump. Call once, from the main thread, at app start.
+/// CEF's start blocks the main thread: call [`crate::keep_reading_display`]
+/// when the first window opens.
 pub fn init(options: RuntimeOptions, cx: &mut App) {
     INIT_AT.set(Instant::now()).ok();
     let (tx, rx) = async_channel::unbounded::<i64>();
