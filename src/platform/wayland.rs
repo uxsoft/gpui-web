@@ -380,17 +380,13 @@ fn connect(display: *mut std::ffi::c_void) -> Result<Globals> {
             f.modifiers.clone(),
         )
     };
-    std::thread::Builder::new()
-        .name("gpui-web-wayland".into())
-        .spawn(move || {
-            let mut state = State;
-            loop {
-                if let Err(err) = queue.blocking_dispatch(&mut state) {
-                    tracing::warn!("web view: Wayland queue: {err}");
-                    return;
-                }
-            }
-        })?;
+    // Stopped by `stop_reading_display`, before GPUI frees the display.
+    crate::display::register(crate::display::Reader::spawn(
+        "gpui-web-wayland",
+        &conn,
+        queue,
+        State,
+    )?);
     Ok(Globals {
         conn,
         qh,
