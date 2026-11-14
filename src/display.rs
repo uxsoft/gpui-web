@@ -8,13 +8,17 @@
 //! machine swapping. A thread of ours reads the shared connection instead;
 //! libwayland moves each event to its own queue, so GPUI still dispatches
 //! its events, and wakes up for them, on the main thread.
+//!
+//! Our threads use GPUI's `wl_display` without owning it, so they must end
+//! before GPUI frees it: [`stop_reading_display`], when the app quits.
 
 use gpui::Window;
 
 /// Keeps reading `window`'s Wayland connection on a thread of its own, so
 /// a blocked main thread can't get the app disconnected. Call when the
-/// app's first window opens: CEF's start blocks the main thread. Once per
-/// process is enough (later calls do nothing); a no-op off Wayland.
+/// app's first window opens, before the window gets input: CEF's start
+/// blocks the main thread. Once per process is enough (later calls do
+/// nothing); a no-op off Wayland. Pair with [`stop_reading_display`].
 pub fn keep_reading_display(window: &Window) {
     #[cfg(target_os = "linux")]
     wayland::keep_reading(window);
@@ -22,16 +26,40 @@ pub fn keep_reading_display(window: &Window) {
     let _ = window;
 }
 
+/// Stops the threads reading the app's Wayland connection, gpui-web's
+/// presenters' among them; call when the app quits, while its windows
+/// still exist. Returns why GPUI's own Wayland connection is lost, if it
+/// is: a protocol error, or the compositor closing it. Errors of other
+/// connections in the process (a clipboard's, say) don't count.
+pub fn stop_reading_display() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    return wayland::stop_all();
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(feature = "cef"), allow(unused_imports))]
+pub(crate) use wayland::{Reader, register};
+
 #[cfg(target_os = "linux")]
 mod wayland {
-    use std::sync::OnceLock;
+    use std::os::fd::{AsRawFd, BorrowedFd};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::thread::JoinHandle;
 
     use anyhow::{Result, bail};
     use gpui::Window;
     use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-    use wayland_backend::client::Backend;
-    use wayland_client::Connection;
+    use wayland_backend::client::{Backend, WaylandError};
+    use wayland_client::{Connection, EventQueue};
+
+    /// How long a reader waits for events before it checks whether to stop.
+    const POLL_MS: i32 = 100;
+
+    /// The readers of GPUI's connection, for [`stop_all`].
+    static READERS: Mutex<Vec<Reader>> = Mutex::new(Vec::new());
 
     pub(super) fn keep_reading(window: &Window) {
         static STARTED: OnceLock<()> = OnceLock::new();
@@ -40,40 +68,140 @@ mod wayland {
                 Ok(RawDisplayHandle::Wayland(h)) => h.display.as_ptr(),
                 _ => return,
             };
-            if let Err(err) = unsafe { spawn_reader(display) } {
-                tracing::warn!("Wayland reader: {err:#}");
+            match unsafe { spawn_reader(display) } {
+                Ok(reader) => register(reader),
+                Err(err) => tracing::warn!("Wayland reader: {err:#}"),
             }
         });
     }
 
+    /// Has [`stop_reading_display`](super::stop_reading_display) stop
+    /// `reader`.
+    pub(crate) fn register(reader: Reader) {
+        READERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(reader);
+    }
+
+    pub(super) fn stop_all() -> Option<String> {
+        let readers = std::mem::take(&mut *READERS.lock().unwrap_or_else(|e| e.into_inner()));
+        for reader in &readers {
+            reader.stop.store(true, Ordering::SeqCst);
+        }
+        readers.into_iter().fold(None, |lost, r| lost.or(r.stop()))
+    }
+
     /// Starts a thread reading the connection of `display` (a live
-    /// `wl_display`) until it fails.
-    pub(super) unsafe fn spawn_reader(display: *mut std::ffi::c_void) -> Result<JoinHandle<()>> {
+    /// `wl_display`) until it fails or is stopped.
+    pub(super) unsafe fn spawn_reader(display: *mut std::ffi::c_void) -> Result<Reader> {
         if display.is_null() {
             bail!("no wl_display");
         }
         // Its own (empty) queue: reading moves every event to the queue of
         // the object it is for, ours stays empty.
         let backend = unsafe { Backend::from_foreign_display(display.cast()) };
-        let mut queue = Connection::from_backend(backend).new_event_queue::<()>();
-        Ok(std::thread::Builder::new()
-            .name("gpui-web-wayland-reader".into())
-            .spawn(move || {
-                loop {
-                    if let Err(err) = queue.blocking_dispatch(&mut ()) {
+        let conn = Connection::from_backend(backend);
+        let queue = conn.new_event_queue::<()>();
+        Ok(Reader::spawn("gpui-web-wayland-reader", &conn, queue, ())?)
+    }
+
+    /// A thread dispatching a queue of a Wayland connection, which reads the
+    /// connection for every queue on it.
+    pub(crate) struct Reader {
+        stop: Arc<AtomicBool>,
+        thread: JoinHandle<()>,
+        conn: Connection,
+    }
+
+    impl Reader {
+        pub(crate) fn spawn<S: Send + 'static>(
+            name: &str,
+            conn: &Connection,
+            mut queue: EventQueue<S>,
+            mut state: S,
+        ) -> std::io::Result<Self> {
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread = std::thread::Builder::new().name(name.into()).spawn({
+                let stop = stop.clone();
+                move || {
+                    if let Err(err) = read_until_stopped(&mut queue, &mut state, &stop) {
                         tracing::warn!("Wayland reader: {err}");
-                        return;
                     }
                 }
-            })?)
+            })?;
+            Ok(Self {
+                stop,
+                thread,
+                conn: conn.clone(),
+            })
+        }
+
+        /// Ends the thread; returns why the connection is lost, if it is.
+        pub(crate) fn stop(self) -> Option<String> {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = self.thread.join();
+            // A socket the compositor closed shows only once read.
+            if let Some(guard) = self.conn.prepare_read()
+                && readable(guard.connection_fd(), 0)
+            {
+                let _ = guard.read();
+            }
+            // libwayland keeps a connection's fatal error, whichever queue
+            // or thread hit it.
+            match self.conn.flush() {
+                Ok(()) => None,
+                Err(WaylandError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => None,
+                Err(err) => Some(err.to_string()),
+            }
+        }
+    }
+
+    fn read_until_stopped<S>(
+        queue: &mut EventQueue<S>,
+        state: &mut S,
+        stop: &AtomicBool,
+    ) -> Result<(), String> {
+        loop {
+            queue.dispatch_pending(state).map_err(|e| e.to_string())?;
+            ignore_would_block(queue.flush())?;
+            if stop.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            // None: events arrived for our queue; dispatch them first.
+            let Some(guard) = queue.prepare_read() else {
+                continue;
+            };
+            // Dropping the guard unprepared cancels the read.
+            if readable(guard.connection_fd(), POLL_MS) {
+                ignore_would_block(guard.read().map(drop))?;
+            }
+        }
+    }
+
+    /// Another reader may have read the events first.
+    fn ignore_would_block(result: Result<(), WaylandError>) -> Result<(), String> {
+        match result {
+            Err(WaylandError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+            other => other.map_err(|e| e.to_string()),
+        }
+    }
+
+    /// Whether `fd` has something to read (or hung up) within `timeout_ms`.
+    fn readable(fd: BorrowedFd<'_>, timeout_ms: i32) -> bool {
+        let mut poll = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        unsafe { libc::poll(&mut poll, 1, timeout_ms) > 0 }
     }
 
     #[cfg(test)]
     mod tests {
         use std::os::fd::AsRawFd;
         use std::os::unix::net::UnixStream;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
         use std::time::{Duration, Instant};
 
         use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -81,7 +209,7 @@ mod wayland {
         use wayland_client::{Dispatch, Proxy as _, QueueHandle, delegate_noop};
         use wayland_server::backend::{ClientData, ClientId, DisconnectReason};
         use wayland_server::protocol::wl_output::{self, WlOutput as ServerOutput};
-        use wayland_server::{DataInit, Display, GlobalDispatch, New};
+        use wayland_server::{DataInit, Display, GlobalDispatch, New, Resource as _};
 
         use super::*;
 
@@ -92,7 +220,7 @@ mod wayland {
 
         #[derive(Default)]
         struct Server {
-            output: Option<ServerOutput>,
+            outputs: Vec<ServerOutput>,
         }
 
         impl GlobalDispatch<ServerOutput, ()> for Server {
@@ -104,7 +232,7 @@ mod wayland {
                 _: &(),
                 init: &mut DataInit<'_, Self>,
             ) {
-                state.output = Some(init.init(resource, ()));
+                state.outputs.push(init.init(resource, ()));
             }
         }
 
@@ -144,11 +272,135 @@ mod wayland {
         }
         delegate_noop!(Client: ignore WlOutput);
 
+        /// A compositor in a thread, with one output global.
+        struct TestServer {
+            /// Per client: whether the compositor dropped it.
+            dropped: Vec<Arc<AtomicBool>>,
+            flooded: Arc<AtomicBool>,
+            kill: mpsc::Sender<usize>,
+            stop: Arc<AtomicBool>,
+            thread: Option<JoinHandle<()>>,
+        }
+
+        impl TestServer {
+            /// Serves `clients`; with `flood`, floods the first one's output.
+            fn start(clients: Vec<UnixStream>, flood: bool) -> Self {
+                let dropped: Vec<_> = clients
+                    .iter()
+                    .map(|_| Arc::new(AtomicBool::new(false)))
+                    .collect();
+                let flooded = Arc::new(AtomicBool::new(false));
+                let stop = Arc::new(AtomicBool::new(false));
+                let (kill, kills) = mpsc::channel::<usize>();
+                // Closing these closes the connection as a compositor does.
+                let sockets: Vec<UnixStream> =
+                    clients.iter().map(|s| s.try_clone().unwrap()).collect();
+                let thread = std::thread::spawn({
+                    let (dropped, flooded, stop) = (dropped.clone(), flooded.clone(), stop.clone());
+                    move || {
+                        let mut display = Display::<Server>::new().unwrap();
+                        let mut dh = display.handle();
+                        dh.create_global::<Server, ServerOutput, ()>(4, ());
+                        let ids: Vec<ClientId> = clients
+                            .into_iter()
+                            .zip(&dropped)
+                            .map(|(stream, dropped)| {
+                                dh.insert_client(stream, Arc::new(Watch(dropped.clone())))
+                                    .unwrap()
+                                    .id()
+                            })
+                            .collect();
+                        let mut state = Server::default();
+                        let mut batches = 0;
+                        while !stop.load(Ordering::SeqCst) {
+                            display.dispatch_clients(&mut state).ok();
+                            while let Ok(i) = kills.try_recv() {
+                                sockets[i].shutdown(std::net::Shutdown::Both).ok();
+                            }
+                            let first = state
+                                .outputs
+                                .iter()
+                                .find(|o| o.client().is_some_and(|c| c.id() == ids[0]));
+                            if flood
+                                && let Some(output) = first
+                                && batches < BATCHES
+                                && !dropped[0].load(Ordering::SeqCst)
+                            {
+                                for i in 0..PER_BATCH {
+                                    output.mode(wl_output::Mode::Current, i as i32, 600, 60_000);
+                                }
+                                batches += 1;
+                                if batches == BATCHES {
+                                    flooded.store(true, Ordering::SeqCst);
+                                }
+                            }
+                            display.flush_clients().ok();
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    }
+                });
+                Self {
+                    dropped,
+                    flooded,
+                    kill,
+                    stop,
+                    thread: Some(thread),
+                }
+            }
+
+            fn dropped(&self, client: usize) -> bool {
+                self.dropped[client].load(Ordering::SeqCst)
+            }
+
+            /// Waits up to 20 s for `done`.
+            fn wait(&self, done: impl Fn(&Self) -> bool) {
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while !done(self) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+
+        impl Drop for TestServer {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::SeqCst);
+                if let Some(thread) = self.thread.take() {
+                    thread.join().unwrap();
+                }
+            }
+        }
+
+        /// A client socket pair; `None` without libwayland-client.
+        fn pair() -> Option<(UnixStream, Backend)> {
+            let (server_end, client_end) = UnixStream::pair().unwrap();
+            match Backend::connect(client_end) {
+                Ok(backend) => Some((server_end, backend)),
+                Err(_) => {
+                    eprintln!("skipped: no libwayland-client");
+                    None
+                }
+            }
+        }
+
+        /// The app's side: `backend` with the output bound. Nothing
+        /// dispatches the returned queue: the "main thread" is blocked.
+        fn bind_output(backend: &Backend) -> (Connection, EventQueue<Client>, WlOutput) {
+            let conn = Connection::from_backend(backend.clone());
+            let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+            let output: WlOutput = globals.bind(&queue.handle(), 1..=4, ()).unwrap();
+            queue.roundtrip(&mut Client).unwrap();
+            (conn, queue, output)
+        }
+
+        fn reader_of(backend: &Backend) -> Reader {
+            unsafe { spawn_reader(backend.display_ptr().cast()) }.unwrap()
+        }
+
         /// Floods a client whose "main thread" never dispatches: whether the
         /// compositor dropped it, and whether it was connected and usable
         /// once the flood was over.
         fn flood(read_on_a_thread: bool) -> Option<(bool, bool)> {
-            let (server_end, client_end) = UnixStream::pair().unwrap();
+            let (server_end, backend) = pair()?;
             // The smallest send buffer the kernel allows, so the test needs
             // little data to fill it.
             let size: libc::c_int = 1;
@@ -161,66 +413,18 @@ mod wayland {
                     std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                 );
             }
-            let Ok(backend) = Backend::connect(client_end) else {
-                eprintln!("skipped: no libwayland-client");
-                return None;
-            };
-
-            let killed = Arc::new(AtomicBool::new(false));
-            let flooded = Arc::new(AtomicBool::new(false));
-            let stop = Arc::new(AtomicBool::new(false));
-            let server = std::thread::spawn({
-                let (killed, flooded, stop) = (killed.clone(), flooded.clone(), stop.clone());
-                move || {
-                    let mut display = Display::<Server>::new().unwrap();
-                    let mut dh = display.handle();
-                    dh.create_global::<Server, ServerOutput, ()>(4, ());
-                    dh.insert_client(server_end, Arc::new(Watch(killed.clone())))
-                        .unwrap();
-                    let mut state = Server::default();
-                    let mut batches = 0;
-                    while !stop.load(Ordering::SeqCst) {
-                        display.dispatch_clients(&mut state).ok();
-                        if let Some(output) = &state.output
-                            && batches < BATCHES
-                            && !killed.load(Ordering::SeqCst)
-                        {
-                            for i in 0..PER_BATCH {
-                                output.mode(wl_output::Mode::Current, i as i32, 600, 60_000);
-                            }
-                            batches += 1;
-                            if batches == BATCHES {
-                                flooded.store(true, Ordering::SeqCst);
-                            }
-                        }
-                        display.flush_clients().ok();
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
-                }
-            });
-
-            let conn = Connection::from_backend(backend.clone());
-            let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
-            let output: WlOutput = globals.bind(&queue.handle(), 1..=4, ()).unwrap();
-            conn.flush().unwrap();
-            if read_on_a_thread {
-                unsafe { spawn_reader(backend.display_ptr().cast()) }.unwrap();
-            }
-            // The main thread is "blocked": nothing dispatches `queue`.
-            let deadline = Instant::now() + Duration::from_secs(20);
-            while !flooded.load(Ordering::SeqCst)
-                && !killed.load(Ordering::SeqCst)
-                && Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            let dropped = killed.load(Ordering::SeqCst);
+            let server = TestServer::start(vec![server_end], true);
+            let (_conn, mut queue, output) = bind_output(&backend);
+            let reader = read_on_a_thread.then(|| reader_of(&backend));
+            server.wait(|s| s.flooded.load(Ordering::SeqCst) || s.dropped(0));
+            let dropped = server.dropped(0);
             let alive = !dropped
-                && flooded.load(Ordering::SeqCst)
+                && server.flooded.load(Ordering::SeqCst)
                 && queue.roundtrip(&mut Client).is_ok()
                 && output.is_alive();
-            stop.store(true, Ordering::SeqCst);
-            server.join().unwrap();
+            if let Some(reader) = reader {
+                assert_eq!(reader.stop(), None);
+            }
             Some((dropped, alive))
         }
 
@@ -238,6 +442,55 @@ mod wayland {
                 assert!(!dropped, "the compositor dropped the client");
                 assert!(alive, "the client didn't survive the flood");
             }
+        }
+
+        #[test]
+        fn a_stopped_reader_ends_promptly_and_leaves_the_connection_working() {
+            let Some((server_end, backend)) = pair() else {
+                return;
+            };
+            let server = TestServer::start(vec![server_end], false);
+            let (_conn, mut queue, _output) = bind_output(&backend);
+            let reader = reader_of(&backend);
+            std::thread::sleep(Duration::from_millis(50));
+            let started = Instant::now();
+            assert_eq!(reader.stop(), None);
+            assert!(started.elapsed() < Duration::from_secs(1));
+            // The app's own reading carries on without it.
+            assert!(queue.roundtrip(&mut Client).is_ok());
+            assert!(!server.dropped(0));
+        }
+
+        #[test]
+        fn a_reader_reports_its_connection_closed() {
+            let Some((server_end, backend)) = pair() else {
+                return;
+            };
+            let server = TestServer::start(vec![server_end], false);
+            let (_conn, _queue, _output) = bind_output(&backend);
+            let reader = reader_of(&backend);
+            server.kill.send(0).unwrap();
+            server.wait(|s| s.dropped(0));
+            std::thread::sleep(Duration::from_millis(50));
+            let lost = reader.stop().expect("the connection was closed");
+            assert!(lost.starts_with("Io error"), "{lost}");
+        }
+
+        #[test]
+        fn another_connection_closing_is_not_reported() {
+            // A clipboard's or portal's connection, next to GPUI's.
+            let (Some((app_end, app)), Some((other_end, other))) = (pair(), pair()) else {
+                return;
+            };
+            let server = TestServer::start(vec![app_end, other_end], false);
+            let (_conn, _queue, _output) = bind_output(&app);
+            let (_other_conn, mut other_queue, _other_output) = bind_output(&other);
+            let reader = reader_of(&app);
+            server.kill.send(1).unwrap();
+            server.wait(|s| s.dropped(1));
+            assert!(other_queue.roundtrip(&mut Client).is_err());
+            assert_eq!(reader.stop(), None);
+            assert!(!server.dropped(0));
         }
     }
 }

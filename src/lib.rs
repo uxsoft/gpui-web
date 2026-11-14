@@ -12,7 +12,8 @@
 //! 2. At app start: [`init`], and [`window_background`] for the window;
 //!    [`keep_reading_display`] once it is open.
 //! 3. [`HoleBackground`] as the window root's background.
-//! 4. [`WebView::new`] for each page; [`shutdown`] when the app quits.
+//! 4. [`WebView::new`] for each page; [`shutdown`] and
+//!    [`stop_reading_display`] when the app quits.
 //!
 //! See `docs/webview-spikes.md` for what each platform path relies on.
 //!
@@ -42,7 +43,7 @@ mod types;
 mod webview;
 
 pub use devtools::{devtools_url, take_devtools_pipe};
-pub use display::keep_reading_display;
+pub use display::{keep_reading_display, stop_reading_display};
 #[cfg(feature = "cef")]
 pub use element::HoleBackground;
 #[cfg(feature = "cef")]
