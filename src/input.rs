@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn mac_key_events_always_carry_a_character() {
         let character =
-            |s: &str, down: bool| key_down_up(&stroke(s), down, false).unwrap().character;
+            |s: &'static str, down: bool| key_down_up(&stroke(s), down, false).unwrap().character;
         assert_eq!(character("backspace", true), 0x7f);
         assert_eq!(character("backspace", false), 0x7f);
         assert_eq!(character("left", false), 0xf702);

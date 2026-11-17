@@ -105,6 +105,35 @@ thread_local! {
     static RUNTIME: RefCell<Option<Runtime>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    /// How deep the thread is in CEF's message loop work: whatever CEF
+    /// calls back from there runs with CEF on the stack.
+    static IN_LOOP: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Runs `f`, CEF's message loop work, noting that CEF is on the stack.
+fn in_cef_loop<T>(f: impl FnOnce() -> T) -> T {
+    struct Leave;
+    impl Drop for Leave {
+        fn drop(&mut self) {
+            IN_LOOP.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+    IN_LOOP.with(|depth| depth.set(depth.get() + 1));
+    let _leave = Leave;
+    f()
+}
+
+/// Whether CEF's message loop work is on this thread's stack.
+fn in_loop() -> bool {
+    IN_LOOP.with(|depth| depth.get() > 0)
+}
+
+/// One turn of CEF's message loop.
+fn pump_once() {
+    in_cef_loop(do_message_loop_work);
+}
+
 /// Where CEF's "do work" requests go, from any thread.
 static PUMP: OnceLock<async_channel::Sender<i64>> = OnceLock::new();
 
@@ -191,7 +220,7 @@ pub fn init(options: RuntimeOptions, cx: &mut App) {
             }
             due = None;
             if is_running() {
-                do_message_loop_work();
+                pump_once();
             }
             crate::browser::run_deferred();
         }
@@ -503,31 +532,46 @@ fn path_string(path: &Path) -> CefString {
 
 /// Closes every browser, letting each save its state, then stops CEF.
 /// Blocks for up to `timeout`; call it when the app quits.
+///
+/// A quit that CEF's own message loop brings about (macOS delivers "Quit
+/// & Reopen" and other quit events from inside it) leaves CEF as it is:
+/// CEF can't be pumped or shut down from inside itself, and the process
+/// is exiting anyway.
 pub fn shutdown(timeout: Duration) {
     if !is_running() {
+        return;
+    }
+    if in_loop() {
+        tracing::warn!("quit from inside CEF's message loop: leaving CEF to the exit");
+        stop();
         return;
     }
     crate::browser::close_all();
     let deadline = Instant::now() + timeout;
     let live = RUNTIME.with_borrow(|r| r.as_ref().map(|r| r.live.clone()));
     while live.as_ref().is_some_and(|l| l.get() > 0) && Instant::now() < deadline {
-        do_message_loop_work();
+        pump_once();
         std::thread::sleep(Duration::from_millis(5));
     }
     // A few more turns let CEF release what the closed browsers held.
     for _ in 0..10 {
-        do_message_loop_work();
+        pump_once();
         std::thread::sleep(Duration::from_millis(2));
     }
     crate::browser::run_deferred();
     crate::browser::forget_all();
     forget_profiles();
+    stop();
+    cef::shutdown();
+}
+
+/// Marks the runtime stopped: the pump does no more work.
+fn stop() {
     RUNTIME.with_borrow_mut(|r| {
         if let Some(r) = r {
             r.state = State::Stopped;
         }
     });
-    cef::shutdown();
 }
 
 /// A browsing profile: cookies, storage and cache, kept in its own
@@ -612,29 +656,51 @@ impl PartialEq for Profile {
 
 #[cfg(test)]
 mod tests {
+    /// Puts a runtime in `state` on this thread, without CEF.
+    fn set_runtime(state: super::State) {
+        super::RUNTIME.with_borrow_mut(|r| {
+            *r = Some(super::Runtime {
+                options: crate::types::RuntimeOptions {
+                    root_cache_dir: std::env::temp_dir(),
+                    download_dir: None,
+                    remote_debugging: crate::types::RemoteDebugging::Off,
+                    log_level: crate::types::LogLevel::Warning,
+                    log_file: None,
+                    user_agent_product: None,
+                    system_dns: false,
+                    allow_local_network: false,
+                    subprocess_path: None,
+                },
+                state,
+                live: Default::default(),
+                mode: crate::platform::mode(),
+            })
+        })
+    }
+
+    #[test]
+    fn a_quit_from_inside_cef_leaves_cef_alone() {
+        use super::{RUNTIME, State, in_cef_loop, in_loop, is_running, shutdown};
+        set_runtime(State::Running);
+        assert!(!in_loop());
+        // CEF isn't initialized here: shutting it down or pumping it would
+        // crash the test.
+        in_cef_loop(|| {
+            assert!(in_loop());
+            in_cef_loop(|| assert!(in_loop()));
+            assert!(in_loop());
+            shutdown(std::time::Duration::from_secs(1));
+        });
+        assert!(!in_loop());
+        assert!(!is_running());
+        assert!(RUNTIME.with_borrow(|r| matches!(r.as_ref().unwrap().state, State::Stopped)));
+        RUNTIME.with_borrow_mut(|r| *r = None);
+    }
+
     #[test]
     fn a_failed_engine_can_retry_unless_chromium_itself_failed() {
-        use super::{RUNTIME, Runtime, State, engine_error, retry_engine};
-        let set = |state| {
-            RUNTIME.with_borrow_mut(|r| {
-                *r = Some(Runtime {
-                    options: crate::types::RuntimeOptions {
-                        root_cache_dir: std::env::temp_dir(),
-                        download_dir: None,
-                        remote_debugging: crate::types::RemoteDebugging::Off,
-                        log_level: crate::types::LogLevel::Warning,
-                        log_file: None,
-                        user_agent_product: None,
-                        system_dns: false,
-                        allow_local_network: false,
-                        subprocess_path: None,
-                    },
-                    state,
-                    live: Default::default(),
-                    mode: crate::platform::mode(),
-                })
-            })
-        };
+        use super::{RUNTIME, State, engine_error, retry_engine};
+        let set = set_runtime;
         let state = || RUNTIME.with_borrow(|r| matches!(r.as_ref().unwrap().state, State::Idle));
         assert_eq!(engine_error(), None);
         set(State::Failed {
